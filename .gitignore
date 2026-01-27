@@ -1,0 +1,6 @@
+secrets/
+data/
+photos/
+.venv/
+__pycache__/
+*.db
