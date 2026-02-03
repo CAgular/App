@@ -4,3 +4,4 @@ photos/
 .venv/
 __pycache__/
 *.db
+memories.db
