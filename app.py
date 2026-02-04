@@ -153,6 +153,51 @@ def download_drive_file_to_cache(drive, drive_file_id: str, cache_path: str) -> 
     except Exception:
         return False
 
+def delete_memory(mem_id: str):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM memories WHERE id = ?", (mem_id,))
+        conn.commit()
+
+
+def delete_drive_file(drive, drive_file_id: str) -> bool:
+    """Slet en fil i Drive via PyDrive2-objektet. Returnerer True hvis OK."""
+    try:
+        gfile = drive.CreateFile({"id": drive_file_id})
+        gfile.Delete()
+        return True
+    except Exception:
+        return False
+
+
+def cleanup_photos(photo_path: str | None, photo_drive_id: str | None, photo_drive_name: str | None, drive):
+    """
+    Forsøger at slette:
+    - Lokal photo_path (hvis findes)
+    - Cache-foto i photos_cache (hvis findes)
+    - Drive-foto (hvis drive er connected og photo_drive_id findes)
+    """
+    # 1) lokal fil
+    if photo_path and os.path.exists(photo_path):
+        try:
+            os.remove(photo_path)
+        except OSError:
+            pass
+
+    # 2) cached drive foto (din cache navngives som {photo_drive_id}{ext})
+    if photo_drive_id:
+        ext = os.path.splitext(photo_drive_name or "")[1].lower()
+        if ext not in [".jpg", ".jpeg", ".png", ".webp"]:
+            ext = ".jpg"
+        cache_path = os.path.join(PHOTOS_CACHE_DIR, f"{photo_drive_id}{ext}")
+        if os.path.exists(cache_path):
+            try:
+                os.remove(cache_path)
+            except OSError:
+                pass
+
+    # 3) drive fil
+    if drive is not None and photo_drive_id:
+        delete_drive_file(drive, photo_drive_id)
 
 # -----------------------------
 # App start
@@ -250,7 +295,76 @@ if not rows:
 else:
     for _id, created_at, text, tags, photo_path, photo_drive_id, photo_drive_name in rows:
         with st.container(border=True):
+        # Toplinje: metadata + slet
+            top = st.columns([3, 1])
+            with top[0]:
+                st.caption(f"Added: {created_at}")
+            with top[1]:
+            # to-trins bekræftelse i session_state
+                confirm_key = f"confirm_delete_{_id}"
+                if confirm_key not in st.session_state:
+                    st.session_state[confirm_key] = False
+
+                if not st.session_state[confirm_key]:
+                    if st.button("🗑️ Slet", key=f"del_{_id}"):
+                        st.session_state[confirm_key] = True
+                        st.rerun()
+                else:
+                    st.warning("Vil du slette denne memory?")
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        if st.button("Ja, slet", key=f"del_yes_{_id}"):
+                        # 1) slet fotos (lokal + cache + evt drive)
+                            cleanup_photos(photo_path, photo_drive_id, photo_drive_name, drive)
+
+                        # 2) slet DB row
+                            delete_memory(_id)
+
+                        # 3) sync DB til Drive
+                            if drive is not None:
+                                try:
+                                    upload_or_update(drive, FOLDER_ID, DB_PATH, DB_DRIVE_NAME)
+                                except Exception as e:
+                                    st.warning(f"Slettet lokalt, men kunne ikke sync DB til Drive: {e}")
+
+                        # reset confirm state og refresh
+                            st.session_state[confirm_key] = False
+                            st.success("Slettet ✅")
+                            st.rerun()
+                    with c2:
+                        if st.button("Annuller", key=f"del_no_{_id}"):
+                            st.session_state[confirm_key] = False
+                            st.rerun()
+
             cols = st.columns([1, 2])
+
+            with cols[0]:
+            # ... din eksisterende billedlogik her (uændret)
+                if photo_path and os.path.exists(photo_path):
+                    st.image(photo_path, use_container_width=True)
+                elif drive is not None and photo_drive_id:
+                    ext = os.path.splitext(photo_drive_name or "")[1].lower()
+                    if ext not in [".jpg", ".jpeg", ".png", ".webp"]:
+                        ext = ".jpg"
+                    cache_path = os.path.join(PHOTOS_CACHE_DIR, f"{photo_drive_id}{ext}")
+
+                    if not os.path.exists(cache_path):
+                        ok = download_drive_file_to_cache(drive, photo_drive_id, cache_path)
+                        if not ok:
+                            st.warning("Could not download photo from Drive.")
+
+                    if os.path.exists(cache_path):
+                        st.image(cache_path, use_container_width=True)
+                    else:
+                        st.warning("Photo missing.")
+                else:
+                    st.warning("Photo not found.")
+
+            with cols[1]:
+                st.write(f"**{text}**")
+                if tags:
+                    st.caption(f"Tags: {tags}")
+
 
             with cols[0]:
                 # 1) Prefer local photo if available
