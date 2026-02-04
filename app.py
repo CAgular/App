@@ -237,7 +237,22 @@ st.divider()
 st.subheader("➕ Add a memory")
 
 with st.form("add_memory_form", clear_on_submit=True):
-    uploaded = st.file_uploader("Photo (required)", type=["jpg", "jpeg", "png", "webp"])
+    source = st.radio(
+    "Vælg hvordan du vil tilføje foto",
+    ["📷 Kamera", "📁 Browse / upload"],
+    horizontal=True,
+    )
+
+    uploaded = None
+
+    if source == "📷 Kamera":
+        uploaded = st.camera_input("Tag et billede")
+    else:
+        uploaded = st.file_uploader(
+            "Vælg et billede",
+            type=["jpg", "jpeg", "png", "webp"],
+        )
+
     text = st.text_input(
         "One-line memory (required)",
         placeholder="e.g. Hallway lamp → E14, max 40W",
