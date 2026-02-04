@@ -236,6 +236,10 @@ with st.expander("Drive sync status", expanded=False):
 st.divider()
 st.subheader("➕ Add a memory")
 
+if "saving" not in st.session_state:
+    st.session_state["saving"] = False
+
+
 with st.form("add_memory_form", clear_on_submit=True):
     source = st.radio(
     "Vælg hvordan du vil tilføje foto",
@@ -262,9 +266,10 @@ with st.form("add_memory_form", clear_on_submit=True):
         placeholder="home, lighting",
     )
 
-    submitted = st.form_submit_button("Save memory")
+    submitted = st.form_submit_button("Save memory", disabled=st.session_state["saving"])
 
     if submitted:
+        st.session_state["saving"] = True
         if uploaded is None:
             st.error("Please upload a photo.")
         elif not text.strip():
@@ -297,7 +302,7 @@ with st.form("add_memory_form", clear_on_submit=True):
                     upload_or_update(drive, FOLDER_ID, DB_PATH, DB_DRIVE_NAME)
                 except Exception as e:
                     st.warning(f"Saved locally, but failed to sync DB to Drive: {e}")
-
+            st.session_state["saving"] = False            
             st.success("Saved ✅")
 
 
