@@ -361,11 +361,11 @@ with st.form("Tilføj et punkt", clear_on_submit=True):
 # ============================================================
 
 st.divider()
-st.subheader("🗂 Recent memories")
+st.subheader("🗂 Seneste minder")
 
 rows = fetch_recent(limit=30)
 if not rows:
-    st.info("No memories yet. Add your first one above 👆")
+    st.info("Ingen minder endnu. Tilføj et 👆")
 else:
     for _id, created_at, text, tags, photo_path, photo_drive_id, photo_drive_name in rows:
         with st.container(border=True):
@@ -442,4 +442,5 @@ else:
                 st.write(f"**{text}**")
                 if tags:
                     st.caption(f"Tags: {tags}")
+
 
