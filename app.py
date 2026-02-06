@@ -12,7 +12,7 @@ st.title("🏠 Knudsen Home App")
 st.caption("Vælg en funktion nedenfor.")
 st.divider()
 
-st.link_button("🏠 Memories", "/pages/1_Memories", use_container_width=True)
+st.link_button("🏠 Memories", "/Memories", use_container_width=True)
 st.link_button("🧰 Maintenance", "/Maintenance", use_container_width=True)
 st.link_button("🛒 Shopping", "/Shopping", use_container_width=True)
 
