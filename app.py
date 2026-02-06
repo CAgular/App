@@ -20,15 +20,15 @@ def go(page_path: str):
 c1, c2 = st.columns(2)
 with c1:
     if st.button("🏠 Memories", use_container_width=True):
-        go("pages/01_🏠_Memories.py")
+        go("pages/Memories.py")
 with c2:
     if st.button("🧰 Maintenance", use_container_width=True):
-        go("pages/02_🧰_Maintenance.py")
+        go("pages/Maintenance.py")
 
 c3, c4 = st.columns(2)
 with c3:
     if st.button("🛒 Shopping", use_container_width=True):
-        go("pages/03_🛒_Shopping.py")
+        go("pages/Shopping.py")
 with c4:
     st.button("➕ Coming soon", use_container_width=True, disabled=True)
 
