@@ -1,6 +1,6 @@
 on:
   schedule:
-    - cron: "*/30 * * * *"  # hver 10. minut
+    - cron: "*/30 * * * *"  # hver 30. minut
   workflow_dispatch:
 
 jobs:
