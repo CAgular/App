@@ -22,7 +22,7 @@ from drive_sync import connect_drive, download_if_exists, upload_or_update, FOLD
 # 1) Config
 # ============================================================
 
-APP_TITLE = "Household Memory"
+APP_TITLE = "Knudsen HomeApp"
 
 DB_PATH = os.path.join("data", "memories.db")
 DB_DRIVE_NAME = "memories.db"
@@ -243,8 +243,8 @@ except Exception as e:
 
 init_db()
 
-st.title("🏠 Household Memory")
-st.caption("Remember once. Find later.")
+st.title("🏠 Knudsen HomeApp")
+st.caption("Husk én gang - Husk altid.")
 
 with st.expander("Drive sync status", expanded=False):
     if drive is None:
@@ -274,7 +274,7 @@ if "last_save_token" not in st.session_state:
 if "last_save_time" not in st.session_state:
     st.session_state["last_save_time"] = 0.0
 
-with st.form("add_memory_form", clear_on_submit=True):
+with st.form("Tilføj et punkt", clear_on_submit=True):
 
     source = st.radio(
         "Vælg hvordan du vil tilføje foto",
@@ -289,16 +289,16 @@ with st.form("add_memory_form", clear_on_submit=True):
         uploaded = st.file_uploader("Vælg et billede", type=["jpg", "jpeg", "png", "webp"])
 
     text = st.text_input(
-        "One-line memory (required)",
-        placeholder="e.g. Hallway lamp → E14, max 40W",
+        "Beskrivelse",
+        placeholder="F.eks. Entrelampe → E14, max 40W",
     )
 
     tags = st.text_input(
-        "Tags (optional, comma-separated)",
-        placeholder="home, lighting",
+        "Tags kommasepareret)",
+        placeholder=("F.eks. Lys, Entre")
     )
 
-    submitted = st.form_submit_button("Save memory", disabled=st.session_state["saving"])
+    submitted = st.form_submit_button("Gem", disabled=st.session_state["saving"])
 
     if submitted:
         st.session_state["saving"] = True
@@ -442,3 +442,4 @@ else:
                 st.write(f"**{text}**")
                 if tags:
                     st.caption(f"Tags: {tags}")
+
