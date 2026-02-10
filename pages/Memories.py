@@ -8,6 +8,7 @@ from src.drive_media import upload_uploadedfile_to_drive, download_drive_file_to
 from drive_sync import upload_or_update, FOLDER_ID
 
 st.set_page_config(page_title=f"{APP_TITLE} • Memories", page_icon="🏠", layout="centered")
+st.link_button("⬅️ Tilbage til forside", "/")
 
 # -----------------------------
 # Init (Drive + DB)
