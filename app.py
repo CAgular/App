@@ -13,7 +13,7 @@ st.caption("Vælg en funktion nedenfor.")
 st.divider()
 
 # Disse paths matcher Streamlits automatiske URL’er
-st.link_button("🏠 Memories", "/1_Memories", use_container_width=True)
+st.link_button("🏠 Memories", "/Memories", use_container_width=True)
 st.link_button("🧰 Maintenance", "/2_Maintenance", use_container_width=True)
 st.link_button("🛒 Shopping", "/3_Shopping", use_container_width=True)
 
