@@ -5,6 +5,12 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import streamlit as st
+
+try:
+    import pandas as pd
+except Exception:
+    pd = None  # failsafe
+
 from src.config import APP_TITLE
 
 # =========================================================
@@ -17,41 +23,36 @@ st.title("🛒 Shopping")
 st.caption("Hurtig, mobil-venlig indkøbsliste med standardvarer + hjemme-lager.")
 
 # =========================================================
-# Mobile-first styling (tighter list)
+# Mobile-first styling (very compact list/table)
 # =========================================================
 st.markdown(
     """
     <style>
       .block-container { padding-top: 0.85rem; padding-bottom: 1.5rem; max-width: 720px; }
 
+      /* Default buttons */
       .stButton>button {
         width: 100%;
-        padding: 0.66rem 0.86rem;
+        padding: 0.62rem 0.82rem;
         border-radius: 16px;
         font-weight: 650;
       }
 
+      /* Inputs */
       div[data-testid="stTextInput"] input,
       div[data-testid="stNumberInput"] input,
       div[data-testid="stSelectbox"] div {
         border-radius: 16px !important;
       }
 
-      .k-card {
-        border: 1px solid rgba(49, 51, 63, 0.14);
+      /* Make the data editor more compact */
+      [data-testid="stDataFrame"] {
         border-radius: 16px;
-        padding: 0.42rem 0.62rem;
-        margin: 0.16rem 0;
-        background: rgba(255,255,255,0.02);
+        overflow: hidden;
       }
-
-      .k-title { font-weight: 760; font-size: 1.02rem; line-height: 1.12; }
-      .k-muted { opacity: 0.72; font-size: 0.90rem; }
-
-      .k-smallbtn .stButton>button {
-        padding: 0.44rem 0.50rem;
-        border-radius: 14px;
-        font-weight: 760;
+      /* reduce table row height / font a bit */
+      [data-testid="stDataFrame"] * {
+        font-size: 0.92rem !important;
       }
 
       h4 { margin-top: 0.45rem; margin-bottom: 0.15rem; }
@@ -66,7 +67,7 @@ st.markdown(
 # =========================================================
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
-DATA_FILE = DATA_DIR / "shopping_v6.json"
+DATA_FILE = DATA_DIR / "shopping_v7.json"
 
 DEFAULT_STORES = ["Netto", "Rema 1000", "Føtex", "Lidl", "Apotek", "Bauhaus", "Andet"]
 DEFAULT_CATEGORIES = [
@@ -105,13 +106,13 @@ def save_data(payload: Dict) -> None:
 
 
 def ensure_state():
-    if "shopping_v6" in st.session_state:
+    if "shopping_v7" in st.session_state:
         return
 
     data = load_data() or {}
     settings = data.get("settings", {}) if isinstance(data.get("settings", {}), dict) else {}
 
-    st.session_state.shopping_v6 = {
+    st.session_state.shopping_v7 = {
         "shopping_items": data.get("shopping_items", []),     # {id,name,qty,category,store,status,created_at,bought_at}
         "standard_items": data.get("standard_items", []),     # {id,name,default_qty,category,store}
         "home_items": data.get("home_items", []),             # {id,name,qty,location,category,store,added_at,last_used_at}
@@ -124,13 +125,15 @@ def ensure_state():
             "default_store": settings.get("default_store", "Netto"),
             "default_home_location": settings.get("default_home_location", "Køleskab"),
             "show_bought": settings.get("show_bought", False),
+            # compact mode: show category/store columns or not
+            "compact_show_cols": settings.get("compact_show_cols", False),
         },
         "meta": data.get("meta", {"last_saved": None}),
     }
 
 
 def persist():
-    S = st.session_state.shopping_v6
+    S = st.session_state.shopping_v7
     payload = {
         "shopping_items": S["shopping_items"],
         "standard_items": S["standard_items"],
@@ -147,7 +150,7 @@ def persist():
 
 
 ensure_state()
-S = st.session_state.shopping_v6
+S = st.session_state.shopping_v7
 
 
 def normalize_name(name: str) -> str:
@@ -293,14 +296,6 @@ def mark_bought(item_id: str):
             return
 
 
-def change_qty(item_id: str, delta: int):
-    for it in S["shopping_items"]:
-        if it["id"] == item_id and it.get("status") == "open":
-            it["qty"] = max(1, int(it.get("qty", 1)) + int(delta))
-            persist()
-            return
-
-
 def delete_open_item(item_id: str):
     S["shopping_items"] = [x for x in S["shopping_items"] if x["id"] != item_id]
     persist()
@@ -332,9 +327,6 @@ def reset_add_form_defaults():
     st.session_state[K_QTY] = 1
     st.session_state[K_STD] = False
     st.session_state[K_LAST_AUTOFILL] = ""
-    # Keep category/store for speed (optional). To reset them too, uncomment:
-    # st.session_state[K_CAT] = "Andet"
-    # st.session_state[K_STORE] = S["settings"].get("default_store", "Netto")
     st.session_state[K_RESET] = False
 
 
@@ -367,7 +359,7 @@ with tab_shop:
     if st.session_state.get(K_RESET, False):
         reset_add_form_defaults()
 
-    # Autofill from memory (also before render)
+    # Autofill from memory
     maybe_autofill_from_memory()
 
     with st.form("add_item_form"):
@@ -413,10 +405,9 @@ with tab_shop:
 
     st.divider()
 
-    # Filters
+    # Filters / compact options
     settings = S["settings"]
     stores = ["Alle"] + S["stores"]
-
     with st.expander("Filtre", expanded=False):
         settings["store_filter"] = st.selectbox(
             "Butik",
@@ -425,6 +416,11 @@ with tab_shop:
             key="filter_store",
         )
         settings["show_bought"] = st.toggle("Vis købte varer", value=bool(settings.get("show_bought", False)), key="toggle_bought")
+        settings["compact_show_cols"] = st.toggle(
+            "Vis butik/kategori kolonner (mindre kompakt)",
+            value=bool(settings.get("compact_show_cols", False)),
+            key="toggle_compact_cols",
+        )
         S["settings"] = settings
         persist()
 
@@ -440,73 +436,108 @@ with tab_shop:
     open_items = [x for x in items if x.get("status") == "open"]
     bought_items = [x for x in items if x.get("status") == "bought"]
 
+    # Sorting still by store/category/name, even if we don't show them
     open_items.sort(key=lambda x: (x.get("store", ""), x.get("category", ""), x.get("name", "").lower()))
     bought_items.sort(key=lambda x: (x.get("bought_at") or ""), reverse=True)
 
-    st.subheader("🧾 Indkøbsliste")
-    if not open_items:
+    st.subheader("🧾 Indkøbsliste (kompakt)")
+
+    if pd is None:
+        st.error("Pandas mangler i miljøet. Tilføj 'pandas' i requirements.txt for at bruge kompakt tabel.")
+    elif not open_items:
         st.info("Ingen varer på listen.")
     else:
-        last_group = None
+        # Build compact table: one row per item
+        show_cols = bool(settings.get("compact_show_cols", False))
+        rows = []
         for it in open_items:
-            group = f"{it.get('store','')} · {it.get('category','')}"
-            if group != last_group:
-                st.markdown(f"#### {group}")
-                last_group = group
+            row = {
+                "Købt": False,
+                "Vare": it.get("name", ""),
+                "Antal": int(it.get("qty", 1)),
+                "Slet": False,
+                "_id": it["id"],
+            }
+            if show_cols:
+                row["Butik"] = it.get("store", "")
+                row["Kategori"] = it.get("category", "")
+            rows.append(row)
 
-            st.markdown('<div class="k-card">', unsafe_allow_html=True)
+        df = pd.DataFrame(rows)
 
-            c_name, c_minus, c_qty, c_plus, c_buy, c_del = st.columns(
-                [6.2, 1.05, 1.00, 1.05, 2.3, 0.95], vertical_alignment="center"
-            )
+        # Put columns in nice order
+        if show_cols:
+            df = df[["Købt", "Vare", "Antal", "Butik", "Kategori", "Slet", "_id"]]
+        else:
+            df = df[["Købt", "Vare", "Antal", "Slet", "_id"]]
 
-            with c_name:
-                st.markdown(f'<div class="k-title">{it.get("name","")}</div>', unsafe_allow_html=True)
+        # Hide internal id
+        edited = st.data_editor(
+            df,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Købt": st.column_config.CheckboxColumn("Købt"),
+                "Vare": st.column_config.TextColumn("Vare", disabled=True),
+                "Antal": st.column_config.NumberColumn("Antal", min_value=1, step=1),
+                "Slet": st.column_config.CheckboxColumn("Slet"),
+                "Butik": st.column_config.TextColumn("Butik", disabled=True) if show_cols else None,
+                "Kategori": st.column_config.TextColumn("Kategori", disabled=True) if show_cols else None,
+                "_id": st.column_config.TextColumn("_id", disabled=True),
+            },
+            disabled=["_id"],
+            key="shopping_editor",
+        )
 
-            with c_minus:
-                st.markdown('<div class="k-smallbtn">', unsafe_allow_html=True)
-                if st.button("➖", key=f"m_{it['id']}"):
-                    change_qty(it["id"], -1)
-                    st.rerun()
-                st.markdown("</div>", unsafe_allow_html=True)
+        # Apply changes button (small & safe)
+        c_apply, c_hint = st.columns([1.4, 2.6], vertical_alignment="center")
+        with c_apply:
+            apply = st.button("✅ Anvend ændringer", key="apply_editor")
+        with c_hint:
+            st.caption("Tip: Ret antal direkte i tabellen. Kryds Købt eller Slet og tryk Anvend.")
 
-            with c_qty:
-                st.markdown(
-                    f"<div class='k-muted' style='text-align:center; font-weight:850;'>{it.get('qty',1)}</div>",
-                    unsafe_allow_html=True,
-                )
+        if apply:
+            # Update quantities + bought + delete
+            edited_rows = edited.to_dict(orient="records")
 
-            with c_plus:
-                st.markdown('<div class="k-smallbtn">', unsafe_allow_html=True)
-                if st.button("➕", key=f"p_{it['id']}"):
-                    change_qty(it["id"], +1)
-                    st.rerun()
-                st.markdown("</div>", unsafe_allow_html=True)
+            # Map id->item
+            by_id = {it["id"]: it for it in S["shopping_items"]}
 
-            with c_buy:
-                if st.button("✅ Købt", key=f"buy_{it['id']}"):
-                    mark_bought(it["id"])
-                    st.rerun()
+            # First apply qty changes for open items
+            for r in edited_rows:
+                item_id = r.get("_id")
+                if item_id in by_id:
+                    it = by_id[item_id]
+                    if it.get("status") == "open":
+                        new_qty = int(r.get("Antal", it.get("qty", 1)) or 1)
+                        it["qty"] = max(1, new_qty)
 
-            with c_del:
-                st.markdown('<div class="k-smallbtn">', unsafe_allow_html=True)
-                if st.button("🗑️", key=f"d_{it['id']}"):
-                    delete_open_item(it["id"])
-                    st.rerun()
-                st.markdown("</div>", unsafe_allow_html=True)
+            persist()
 
-            st.markdown("</div>", unsafe_allow_html=True)
+            # Then handle bought and delete
+            for r in edited_rows:
+                item_id = r.get("_id")
+                if not item_id:
+                    continue
+
+                if bool(r.get("Slet", False)):
+                    delete_open_item(item_id)
+                    continue
+
+                if bool(r.get("Købt", False)):
+                    mark_bought(item_id)
+
+            st.success("Opdateret ✅")
+            st.rerun()
 
     if settings.get("show_bought", False):
         with st.expander(f"✅ Købte varer ({len(bought_items)})", expanded=False):
             if not bought_items:
                 st.caption("Ingen købte varer.")
             else:
+                # Compact display for bought
                 for it in bought_items[:120]:
-                    st.markdown('<div class="k-card">', unsafe_allow_html=True)
-                    st.markdown(f'<div class="k-title">{it.get("name","")} · {it.get("qty",1)}</div>', unsafe_allow_html=True)
-                    st.markdown(f'<div class="k-muted">Købt: {human_time(it.get("bought_at"))}</div>', unsafe_allow_html=True)
-                    st.markdown("</div>", unsafe_allow_html=True)
+                    st.write(f"• {it.get('name','')} ×{it.get('qty',1)} — {human_time(it.get('bought_at'))}")
 
 # =========================================================
 # 🏠 HOME
@@ -535,21 +566,14 @@ with tab_home:
                 st.markdown(f"#### {loc}")
                 last_loc = loc
 
-            st.markdown('<div class="k-card">', unsafe_allow_html=True)
-            c1, c2, c3, c4 = st.columns([5.2, 1.1, 1.2, 2.5], vertical_alignment="center")
-
+            # Simple, compact rows
+            c1, c2, c3 = st.columns([6, 1.2, 2.8], vertical_alignment="center")
             with c1:
-                st.markdown(f'<div class="k-title">{it.get("name","")}</div>', unsafe_allow_html=True)
-
+                st.write(f"{it.get('name','')}")
             with c2:
-                st.markdown(
-                    f"<div class='k-muted' style='text-align:center; font-weight:850;'>{it.get('qty',1)}</div>",
-                    unsafe_allow_html=True,
-                )
-
+                st.write(f"×{it.get('qty',1)}")
             with c3:
-                st.markdown('<div class="k-smallbtn">', unsafe_allow_html=True)
-                if st.button("🍽️", key=f"used_{it['id']}"):
+                if st.button("🍽️ Brugt", key=f"used_{it['id']}"):
                     it["qty"] = max(0, int(it.get("qty", 1)) - 1)
                     it["last_used_at"] = now_iso()
                     if it["qty"] <= 0:
@@ -557,45 +581,28 @@ with tab_home:
                     persist()
                     st.session_state["used_name_prompt"] = it.get("name", "")
                     st.rerun()
-                st.markdown("</div>", unsafe_allow_html=True)
 
-            with c4:
-                new_loc = st.selectbox(
-                    "Placering",
-                    S["home_locations"],
-                    index=S["home_locations"].index(loc) if loc in S["home_locations"] else 0,
-                    key=f"hloc_{it['id']}",
-                )
-                if new_loc != loc:
-                    it["location"] = new_loc
-                    persist()
+        used_nm = st.session_state.get("used_name_prompt", "")
+        if used_nm:
+            st.divider()
+            st.write(f"Brugt: **{used_nm}**")
+            yes, no = st.columns([2, 1])
+            with yes:
+                if st.button("✅ Tilføj til indkøb igen", key="used_yes"):
+                    mem = S["memory"].get(key(used_nm), {})
+                    add_or_merge_shopping(
+                        used_nm,
+                        int(mem.get("default_qty", 1) or 1),
+                        mem.get("category", "Andet"),
+                        mem.get("store", S["settings"].get("default_store", "Netto")),
+                    )
+                    st.session_state["used_name_prompt"] = ""
+                    st.success("Tilføjet ✅")
                     st.rerun()
-
-            st.markdown("</div>", unsafe_allow_html=True)
-
-    used_nm = st.session_state.get("used_name_prompt", "")
-    if used_nm:
-        st.markdown('<div class="k-card">', unsafe_allow_html=True)
-        st.markdown(f"<div class='k-title'>Brugt: {used_nm}</div>", unsafe_allow_html=True)
-        st.markdown("<div class='k-muted'>Tilføj til indkøbslisten igen?</div>", unsafe_allow_html=True)
-        yes, no = st.columns([2, 1], vertical_alignment="center")
-        with yes:
-            if st.button("✅ Ja, tilføj", key="used_yes"):
-                mem = S["memory"].get(key(used_nm), {})
-                add_or_merge_shopping(
-                    used_nm,
-                    int(mem.get("default_qty", 1) or 1),
-                    mem.get("category", "Andet"),
-                    mem.get("store", S["settings"].get("default_store", "Netto")),
-                )
-                st.session_state["used_name_prompt"] = ""
-                st.success("Tilføjet ✅")
-                st.rerun()
-        with no:
-            if st.button("❌ Nej", key="used_no"):
-                st.session_state["used_name_prompt"] = ""
-                st.rerun()
-        st.markdown("</div>", unsafe_allow_html=True)
+            with no:
+                if st.button("❌ Nej", key="used_no"):
+                    st.session_state["used_name_prompt"] = ""
+                    st.rerun()
 
 # =========================================================
 # ⭐ STANDARD
@@ -623,17 +630,13 @@ with tab_std:
                 st.markdown(f"#### {cat}")
                 last_cat = cat
 
-            st.markdown('<div class="k-card">', unsafe_allow_html=True)
-            c1, c2, c3 = st.columns([6.2, 1.2, 2.6], vertical_alignment="center")
+            c1, c2, c3 = st.columns([6, 1.2, 2.8], vertical_alignment="center")
             with c1:
-                st.markdown(f'<div class="k-title">{it.get("name","")}</div>', unsafe_allow_html=True)
+                st.write(it.get("name", ""))
             with c2:
-                st.markdown(
-                    f"<div class='k-muted' style='text-align:center; font-weight:850;'>{it.get('default_qty',1)}</div>",
-                    unsafe_allow_html=True,
-                )
+                st.write(f"×{it.get('default_qty',1)}")
             with c3:
-                if st.button("➕ Tilføj", key=f"stdadd_{it['id']}"):
+                if st.button("➕", key=f"stdadd_{it['id']}"):
                     add_or_merge_shopping(
                         it["name"],
                         int(it.get("default_qty", 1)),
@@ -649,7 +652,6 @@ with tab_std:
                     )
                     st.success("Tilføjet ✅")
                     st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
 
 # =========================================================
 # ⚙️ SETTINGS
@@ -674,7 +676,11 @@ with tab_settings:
         key="set_default_home",
     )
 
-    settings["show_bought"] = st.toggle("Vis købte varer som standard", value=bool(settings.get("show_bought", False)), key="set_show_bought")
+    settings["show_bought"] = st.toggle(
+        "Vis købte varer som standard",
+        value=bool(settings.get("show_bought", False)),
+        key="set_show_bought",
+    )
 
     S["settings"] = settings
     persist()
