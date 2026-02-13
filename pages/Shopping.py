@@ -5,12 +5,6 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import streamlit as st
-
-try:
-    import pandas as pd
-except Exception:
-    pd = None  # failsafe
-
 from src.config import APP_TITLE
 
 # =========================================================
@@ -23,18 +17,18 @@ st.title("🛒 Shopping")
 st.caption("Hurtig, mobil-venlig indkøbsliste med standardvarer + hjemme-lager.")
 
 # =========================================================
-# Mobile-first styling (very compact list/table)
+# Mobile-first styling (compact cards)
 # =========================================================
 st.markdown(
     """
     <style>
-      .block-container { padding-top: 0.85rem; padding-bottom: 1.5rem; max-width: 720px; }
+      .block-container { padding-top: 0.75rem; padding-bottom: 1.25rem; max-width: 720px; }
 
-      /* Default buttons */
+      /* Default buttons (slightly smaller) */
       .stButton>button {
         width: 100%;
-        padding: 0.62rem 0.82rem;
-        border-radius: 16px;
+        padding: 0.58rem 0.78rem;
+        border-radius: 14px;
         font-weight: 650;
       }
 
@@ -42,32 +36,45 @@ st.markdown(
       div[data-testid="stTextInput"] input,
       div[data-testid="stNumberInput"] input,
       div[data-testid="stSelectbox"] div {
-        border-radius: 16px !important;
+        border-radius: 14px !important;
       }
 
-      /* Make the data editor more compact */
-      [data-testid="stDataFrame"] {
-        border-radius: 16px;
-        overflow: hidden;
-      }
-      /* reduce table row height / font a bit */
-      [data-testid="stDataFrame"] * {
-        font-size: 0.92rem !important;
+      /* Compact card for list rows */
+      .k-card {
+        border: 1px solid rgba(49, 51, 63, 0.14);
+        border-radius: 14px;
+        padding: 0.34rem 0.55rem;      /* tighter */
+        margin: 0.12rem 0;            /* much tighter */
+        background: rgba(255,255,255,0.02);
       }
 
-      h4 { margin-top: 0.45rem; margin-bottom: 0.15rem; }
-      h3 { margin-top: 0.60rem; margin-bottom: 0.15rem; }
+      .k-title { font-weight: 760; font-size: 1.02rem; line-height: 1.10; margin: 0; padding: 0; }
+      .k-sub   { opacity: 0.0; height: 0; margin: 0; } /* keep empty for now */
+
+      /* Smaller +/- and icon buttons */
+      .k-tiny .stButton>button {
+        padding: 0.36rem 0.42rem;
+        border-radius: 12px;
+        font-weight: 760;
+      }
+
+      /* Make markdown headings tighter */
+      h4 { margin-top: 0.40rem; margin-bottom: 0.12rem; }
+      h3 { margin-top: 0.55rem; margin-bottom: 0.12rem; }
+
+      /* reduce vertical gaps between elements */
+      div[data-testid="stVerticalBlock"] { gap: 0.35rem; }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
 # =========================================================
-# Persistence (hidden – no export UI)
+# Persistence
 # =========================================================
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
-DATA_FILE = DATA_DIR / "shopping_v7.json"
+DATA_FILE = DATA_DIR / "shopping_v6_3.json"
 
 DEFAULT_STORES = ["Netto", "Rema 1000", "Føtex", "Lidl", "Apotek", "Bauhaus", "Andet"]
 DEFAULT_CATEGORIES = [
@@ -106,17 +113,17 @@ def save_data(payload: Dict) -> None:
 
 
 def ensure_state():
-    if "shopping_v7" in st.session_state:
+    if "shopping_v6_3" in st.session_state:
         return
 
     data = load_data() or {}
     settings = data.get("settings", {}) if isinstance(data.get("settings", {}), dict) else {}
 
-    st.session_state.shopping_v7 = {
-        "shopping_items": data.get("shopping_items", []),     # {id,name,qty,category,store,status,created_at,bought_at}
-        "standard_items": data.get("standard_items", []),     # {id,name,default_qty,category,store}
-        "home_items": data.get("home_items", []),             # {id,name,qty,location,category,store,added_at,last_used_at}
-        "memory": data.get("memory", {}),                     # key=name_lower -> {name,category,store,default_qty,is_standard,updated_at}
+    st.session_state.shopping_v6_3 = {
+        "shopping_items": data.get("shopping_items", []),
+        "standard_items": data.get("standard_items", []),
+        "home_items": data.get("home_items", []),
+        "memory": data.get("memory", {}),
         "stores": data.get("stores", DEFAULT_STORES),
         "categories": data.get("categories", DEFAULT_CATEGORIES),
         "home_locations": data.get("home_locations", DEFAULT_HOME_LOCATIONS),
@@ -125,15 +132,13 @@ def ensure_state():
             "default_store": settings.get("default_store", "Netto"),
             "default_home_location": settings.get("default_home_location", "Køleskab"),
             "show_bought": settings.get("show_bought", False),
-            # compact mode: show category/store columns or not
-            "compact_show_cols": settings.get("compact_show_cols", False),
         },
         "meta": data.get("meta", {"last_saved": None}),
     }
 
 
 def persist():
-    S = st.session_state.shopping_v7
+    S = st.session_state.shopping_v6_3
     payload = {
         "shopping_items": S["shopping_items"],
         "standard_items": S["standard_items"],
@@ -150,7 +155,7 @@ def persist():
 
 
 ensure_state()
-S = st.session_state.shopping_v7
+S = st.session_state.shopping_v6_3
 
 
 def normalize_name(name: str) -> str:
@@ -296,13 +301,21 @@ def mark_bought(item_id: str):
             return
 
 
+def change_qty(item_id: str, delta: int):
+    for it in S["shopping_items"]:
+        if it["id"] == item_id and it.get("status") == "open":
+            it["qty"] = max(1, int(it.get("qty", 1)) + int(delta))
+            persist()
+            return
+
+
 def delete_open_item(item_id: str):
     S["shopping_items"] = [x for x in S["shopping_items"] if x["id"] != item_id]
     persist()
 
 
 # =========================================================
-# Stable input keys + safe reset pattern for Streamlit
+# Stable input keys + safe reset pattern
 # =========================================================
 K_NAME = "add_name"
 K_CAT = "add_category"
@@ -355,11 +368,10 @@ tab_shop, tab_home, tab_std, tab_settings = st.tabs(["🧾 Indkøb", "🏠 Hjemm
 with tab_shop:
     st.subheader("➕ Tilføj")
 
-    # Safe reset must happen before widgets render
+    # safe reset before rendering widgets
     if st.session_state.get(K_RESET, False):
         reset_add_form_defaults()
 
-    # Autofill from memory
     maybe_autofill_from_memory()
 
     with st.form("add_item_form"):
@@ -385,7 +397,6 @@ with tab_shop:
             if is_std:
                 add_or_update_standard(nm, qty, category, store)
 
-            # Trigger reset next run (safe)
             st.session_state[K_RESET] = True
             st.success("Tilføjet ✅")
             st.rerun()
@@ -405,9 +416,10 @@ with tab_shop:
 
     st.divider()
 
-    # Filters / compact options
+    # Filters
     settings = S["settings"]
     stores = ["Alle"] + S["stores"]
+
     with st.expander("Filtre", expanded=False):
         settings["store_filter"] = st.selectbox(
             "Butik",
@@ -416,11 +428,6 @@ with tab_shop:
             key="filter_store",
         )
         settings["show_bought"] = st.toggle("Vis købte varer", value=bool(settings.get("show_bought", False)), key="toggle_bought")
-        settings["compact_show_cols"] = st.toggle(
-            "Vis butik/kategori kolonner (mindre kompakt)",
-            value=bool(settings.get("compact_show_cols", False)),
-            key="toggle_compact_cols",
-        )
         S["settings"] = settings
         persist()
 
@@ -436,106 +443,66 @@ with tab_shop:
     open_items = [x for x in items if x.get("status") == "open"]
     bought_items = [x for x in items if x.get("status") == "bought"]
 
-    # Sorting still by store/category/name, even if we don't show them
+    # Sorting by store/category/name (even if not shown per row)
     open_items.sort(key=lambda x: (x.get("store", ""), x.get("category", ""), x.get("name", "").lower()))
     bought_items.sort(key=lambda x: (x.get("bought_at") or ""), reverse=True)
 
-    st.subheader("🧾 Indkøbsliste (kompakt)")
-
-    if pd is None:
-        st.error("Pandas mangler i miljøet. Tilføj 'pandas' i requirements.txt for at bruge kompakt tabel.")
-    elif not open_items:
+    st.subheader("🧾 Indkøbsliste")
+    if not open_items:
         st.info("Ingen varer på listen.")
     else:
-        # Build compact table: one row per item
-        show_cols = bool(settings.get("compact_show_cols", False))
-        rows = []
+        last_group = None
         for it in open_items:
-            row = {
-                "Købt": False,
-                "Vare": it.get("name", ""),
-                "Antal": int(it.get("qty", 1)),
-                "Slet": False,
-                "_id": it["id"],
-            }
-            if show_cols:
-                row["Butik"] = it.get("store", "")
-                row["Kategori"] = it.get("category", "")
-            rows.append(row)
+            group = f"{it.get('store','')} · {it.get('category','')}"
+            if group != last_group:
+                st.markdown(f"#### {group}")
+                last_group = group
 
-        df = pd.DataFrame(rows)
+            st.markdown('<div class="k-card">', unsafe_allow_html=True)
 
-        # Put columns in nice order
-        if show_cols:
-            df = df[["Købt", "Vare", "Antal", "Butik", "Kategori", "Slet", "_id"]]
-        else:
-            df = df[["Købt", "Vare", "Antal", "Slet", "_id"]]
+            # LINE 1: Name + qty controls (compact)
+            # Use fewer columns to reduce wrapping on iPhone.
+            c_name, c_minus, c_qty, c_plus = st.columns([7.2, 1.05, 1.15, 1.05], vertical_alignment="center")
+            with c_name:
+                st.markdown(f'<div class="k-title">{it.get("name","")}</div>', unsafe_allow_html=True)
+            with c_minus:
+                st.markdown('<div class="k-tiny">', unsafe_allow_html=True)
+                if st.button("➖", key=f"m_{it['id']}"):
+                    change_qty(it["id"], -1)
+                    st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
+            with c_qty:
+                st.markdown(
+                    f"<div style='text-align:center; font-weight:850; opacity:0.85;'>{it.get('qty',1)}</div>",
+                    unsafe_allow_html=True,
+                )
+            with c_plus:
+                st.markdown('<div class="k-tiny">', unsafe_allow_html=True)
+                if st.button("➕", key=f"p_{it['id']}"):
+                    change_qty(it["id"], +1)
+                    st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
 
-        # Hide internal id
-        edited = st.data_editor(
-            df,
-            hide_index=True,
-            use_container_width=True,
-            column_config={
-                "Købt": st.column_config.CheckboxColumn("Købt"),
-                "Vare": st.column_config.TextColumn("Vare", disabled=True),
-                "Antal": st.column_config.NumberColumn("Antal", min_value=1, step=1),
-                "Slet": st.column_config.CheckboxColumn("Slet"),
-                "Butik": st.column_config.TextColumn("Butik", disabled=True) if show_cols else None,
-                "Kategori": st.column_config.TextColumn("Kategori", disabled=True) if show_cols else None,
-                "_id": st.column_config.TextColumn("_id", disabled=True),
-            },
-            disabled=["_id"],
-            key="shopping_editor",
-        )
+            # LINE 2: Big buy + tiny delete
+            c_buy, c_del = st.columns([6.5, 1.5], vertical_alignment="center")
+            with c_buy:
+                if st.button("✅ Købt", key=f"buy_{it['id']}"):
+                    mark_bought(it["id"])
+                    st.rerun()
+            with c_del:
+                st.markdown('<div class="k-tiny">', unsafe_allow_html=True)
+                if st.button("🗑️", key=f"d_{it['id']}"):
+                    delete_open_item(it["id"])
+                    st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
 
-        # Apply changes button (small & safe)
-        c_apply, c_hint = st.columns([1.4, 2.6], vertical_alignment="center")
-        with c_apply:
-            apply = st.button("✅ Anvend ændringer", key="apply_editor")
-        with c_hint:
-            st.caption("Tip: Ret antal direkte i tabellen. Kryds Købt eller Slet og tryk Anvend.")
-
-        if apply:
-            # Update quantities + bought + delete
-            edited_rows = edited.to_dict(orient="records")
-
-            # Map id->item
-            by_id = {it["id"]: it for it in S["shopping_items"]}
-
-            # First apply qty changes for open items
-            for r in edited_rows:
-                item_id = r.get("_id")
-                if item_id in by_id:
-                    it = by_id[item_id]
-                    if it.get("status") == "open":
-                        new_qty = int(r.get("Antal", it.get("qty", 1)) or 1)
-                        it["qty"] = max(1, new_qty)
-
-            persist()
-
-            # Then handle bought and delete
-            for r in edited_rows:
-                item_id = r.get("_id")
-                if not item_id:
-                    continue
-
-                if bool(r.get("Slet", False)):
-                    delete_open_item(item_id)
-                    continue
-
-                if bool(r.get("Købt", False)):
-                    mark_bought(item_id)
-
-            st.success("Opdateret ✅")
-            st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
 
     if settings.get("show_bought", False):
         with st.expander(f"✅ Købte varer ({len(bought_items)})", expanded=False):
             if not bought_items:
                 st.caption("Ingen købte varer.")
             else:
-                # Compact display for bought
                 for it in bought_items[:120]:
                     st.write(f"• {it.get('name','')} ×{it.get('qty',1)} — {human_time(it.get('bought_at'))}")
 
@@ -566,10 +533,9 @@ with tab_home:
                 st.markdown(f"#### {loc}")
                 last_loc = loc
 
-            # Simple, compact rows
-            c1, c2, c3 = st.columns([6, 1.2, 2.8], vertical_alignment="center")
+            c1, c2, c3 = st.columns([6.2, 1.2, 2.6], vertical_alignment="center")
             with c1:
-                st.write(f"{it.get('name','')}")
+                st.write(it.get("name", ""))
             with c2:
                 st.write(f"×{it.get('qty',1)}")
             with c3:
@@ -630,7 +596,7 @@ with tab_std:
                 st.markdown(f"#### {cat}")
                 last_cat = cat
 
-            c1, c2, c3 = st.columns([6, 1.2, 2.8], vertical_alignment="center")
+            c1, c2, c3 = st.columns([6.2, 1.2, 2.6], vertical_alignment="center")
             with c1:
                 st.write(it.get("name", ""))
             with c2:
