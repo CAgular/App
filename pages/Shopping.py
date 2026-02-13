@@ -41,7 +41,7 @@ st.markdown(
         border: 1px solid rgba(49, 51, 63, 0.14);
         border-radius: 16px;
         padding: 0.42rem 0.62rem;
-        margin: 0.16rem 0;          /* tighter spacing */
+        margin: 0.16rem 0;
         background: rgba(255,255,255,0.02);
       }
 
@@ -66,7 +66,7 @@ st.markdown(
 # =========================================================
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
-DATA_FILE = DATA_DIR / "shopping_v5.json"
+DATA_FILE = DATA_DIR / "shopping_v6.json"
 
 DEFAULT_STORES = ["Netto", "Rema 1000", "Føtex", "Lidl", "Apotek", "Bauhaus", "Andet"]
 DEFAULT_CATEGORIES = [
@@ -105,13 +105,13 @@ def save_data(payload: Dict) -> None:
 
 
 def ensure_state():
-    if "shopping_v5" in st.session_state:
+    if "shopping_v6" in st.session_state:
         return
 
     data = load_data() or {}
     settings = data.get("settings", {}) if isinstance(data.get("settings", {}), dict) else {}
 
-    st.session_state.shopping_v5 = {
+    st.session_state.shopping_v6 = {
         "shopping_items": data.get("shopping_items", []),     # {id,name,qty,category,store,status,created_at,bought_at}
         "standard_items": data.get("standard_items", []),     # {id,name,default_qty,category,store}
         "home_items": data.get("home_items", []),             # {id,name,qty,location,category,store,added_at,last_used_at}
@@ -125,13 +125,12 @@ def ensure_state():
             "default_home_location": settings.get("default_home_location", "Køleskab"),
             "show_bought": settings.get("show_bought", False),
         },
-        "used_prompt": None,
         "meta": data.get("meta", {"last_saved": None}),
     }
 
 
 def persist():
-    S = st.session_state.shopping_v5
+    S = st.session_state.shopping_v6
     payload = {
         "shopping_items": S["shopping_items"],
         "standard_items": S["standard_items"],
@@ -148,7 +147,7 @@ def persist():
 
 
 ensure_state()
-S = st.session_state.shopping_v5
+S = st.session_state.shopping_v6
 
 
 def normalize_name(name: str) -> str:
@@ -308,7 +307,7 @@ def delete_open_item(item_id: str):
 
 
 # =========================================================
-# Stable input keys (fix "every other time" category bug)
+# Stable input keys + safe reset pattern for Streamlit
 # =========================================================
 K_NAME = "add_name"
 K_CAT = "add_category"
@@ -316,14 +315,27 @@ K_STORE = "add_store"
 K_QTY = "add_qty"
 K_STD = "add_standard"
 K_LAST_AUTOFILL = "last_autofill_name"
+K_RESET = "add_form_reset"
 
-# init defaults once
 st.session_state.setdefault(K_NAME, "")
 st.session_state.setdefault(K_CAT, "Andet")
 st.session_state.setdefault(K_STORE, S["settings"].get("default_store", "Netto"))
 st.session_state.setdefault(K_QTY, 1)
 st.session_state.setdefault(K_STD, False)
 st.session_state.setdefault(K_LAST_AUTOFILL, "")
+st.session_state.setdefault(K_RESET, False)
+
+
+def reset_add_form_defaults():
+    """Must run BEFORE widgets are rendered."""
+    st.session_state[K_NAME] = ""
+    st.session_state[K_QTY] = 1
+    st.session_state[K_STD] = False
+    st.session_state[K_LAST_AUTOFILL] = ""
+    # Keep category/store for speed (optional). To reset them too, uncomment:
+    # st.session_state[K_CAT] = "Andet"
+    # st.session_state[K_STORE] = S["settings"].get("default_store", "Netto")
+    st.session_state[K_RESET] = False
 
 
 def maybe_autofill_from_memory():
@@ -345,12 +357,17 @@ def maybe_autofill_from_memory():
 # =========================================================
 tab_shop, tab_home, tab_std, tab_settings = st.tabs(["🧾 Indkøb", "🏠 Hjemme", "⭐ Standard", "⚙️ Indstillinger"])
 
-# -------------------------
-# 🧾 INDKØB
-# -------------------------
+# =========================================================
+# 🧾 SHOPPING
+# =========================================================
 with tab_shop:
     st.subheader("➕ Tilføj")
 
+    # Safe reset must happen before widgets render
+    if st.session_state.get(K_RESET, False):
+        reset_add_form_defaults()
+
+    # Autofill from memory (also before render)
     maybe_autofill_from_memory()
 
     with st.form("add_item_form"):
@@ -362,25 +379,22 @@ with tab_shop:
         submit = st.form_submit_button("✅ Tilføj til indkøbslisten")
 
     if submit:
-        name = normalize_name(st.session_state[K_NAME])
-        if not name:
+        nm = normalize_name(st.session_state.get(K_NAME, ""))
+        if not nm:
             st.warning("Skriv et varenavn.")
         else:
-            category = st.session_state[K_CAT]
-            store = st.session_state[K_STORE]
-            qty = int(st.session_state[K_QTY] or 1)
-            is_standard = bool(st.session_state[K_STD])
+            category = st.session_state.get(K_CAT, "Andet")
+            store = st.session_state.get(K_STORE, S["settings"].get("default_store", "Netto"))
+            qty = int(st.session_state.get(K_QTY, 1) or 1)
+            is_std = bool(st.session_state.get(K_STD, False))
 
-            add_or_merge_shopping(name, qty, category, store)
-            upsert_memory(name, category, store, qty, is_standard)
-            if is_standard:
-                add_or_update_standard(name, qty, category, store)
+            add_or_merge_shopping(nm, qty, category, store)
+            upsert_memory(nm, category, store, qty, is_std)
+            if is_std:
+                add_or_update_standard(nm, qty, category, store)
 
-            # reset exactly as requested
-            st.session_state[K_NAME] = ""
-            st.session_state[K_QTY] = 1
-            st.session_state[K_STD] = False
-            st.session_state[K_LAST_AUTOFILL] = ""
+            # Trigger reset next run (safe)
+            st.session_state[K_RESET] = True
             st.success("Tilføjet ✅")
             st.rerun()
 
@@ -389,7 +403,6 @@ with tab_shop:
         for sug in suggestions(pref, limit=12):
             label = f"{sug.get('name','')} (antal {sug.get('default_qty',1)})"
             if st.button(label, key=f"sug_{key(sug.get('name',''))}_{sug.get('store','')}_{sug.get('category','')}"):
-                # fill form fields
                 st.session_state[K_NAME] = sug.get("name", "")
                 st.session_state[K_CAT] = sug.get("category", "Andet")
                 st.session_state[K_STORE] = sug.get("store", S["settings"].get("default_store", "Netto"))
@@ -409,12 +422,13 @@ with tab_shop:
             "Butik",
             stores,
             index=stores.index(settings.get("store_filter", "Alle")) if settings.get("store_filter", "Alle") in stores else 0,
+            key="filter_store",
         )
-        settings["show_bought"] = st.toggle("Vis købte varer", value=bool(settings.get("show_bought", False)))
+        settings["show_bought"] = st.toggle("Vis købte varer", value=bool(settings.get("show_bought", False)), key="toggle_bought")
         S["settings"] = settings
         persist()
 
-    search = st.text_input("Søg i indkøb", placeholder="Søg…")
+    search = st.text_input("Søg i indkøb", placeholder="Søg…", key="shop_search")
 
     items = list(S["shopping_items"])
     if settings.get("store_filter", "Alle") != "Alle":
@@ -442,7 +456,6 @@ with tab_shop:
 
             st.markdown('<div class="k-card">', unsafe_allow_html=True)
 
-            # One compact row: name | - | qty | + | KØBT | delete
             c_name, c_minus, c_qty, c_plus, c_buy, c_del = st.columns(
                 [6.2, 1.05, 1.00, 1.05, 2.3, 0.95], vertical_alignment="center"
             )
@@ -495,12 +508,14 @@ with tab_shop:
                     st.markdown(f'<div class="k-muted">Købt: {human_time(it.get("bought_at"))}</div>', unsafe_allow_html=True)
                     st.markdown("</div>", unsafe_allow_html=True)
 
-# -------------------------
-# 🏠 HJEMME
-# -------------------------
+# =========================================================
+# 🏠 HOME
+# =========================================================
 with tab_home:
     st.subheader("🏠 Hjemme")
     st.caption("Købte varer bliver automatisk lagt her. Tryk 🍽️ når noget er brugt.")
+
+    st.session_state.setdefault("used_name_prompt", "")
 
     q = st.text_input("Søg i hjemme", placeholder="Søg…", key="home_search")
 
@@ -527,19 +542,19 @@ with tab_home:
                 st.markdown(f'<div class="k-title">{it.get("name","")}</div>', unsafe_allow_html=True)
 
             with c2:
-                st.markdown(f"<div class='k-muted' style='text-align:center; font-weight:850;'>{it.get('qty',1)}</div>", unsafe_allow_html=True)
+                st.markdown(
+                    f"<div class='k-muted' style='text-align:center; font-weight:850;'>{it.get('qty',1)}</div>",
+                    unsafe_allow_html=True,
+                )
 
             with c3:
                 st.markdown('<div class="k-smallbtn">', unsafe_allow_html=True)
                 if st.button("🍽️", key=f"used_{it['id']}"):
-                    # decrement
                     it["qty"] = max(0, int(it.get("qty", 1)) - 1)
                     it["last_used_at"] = now_iso()
                     if it["qty"] <= 0:
                         S["home_items"] = [x for x in S["home_items"] if x["id"] != it["id"]]
                     persist()
-
-                    # ask to add again
                     st.session_state["used_name_prompt"] = it.get("name", "")
                     st.rerun()
                 st.markdown("</div>", unsafe_allow_html=True)
@@ -558,7 +573,6 @@ with tab_home:
 
             st.markdown("</div>", unsafe_allow_html=True)
 
-    # prompt to re-add after used
     used_nm = st.session_state.get("used_name_prompt", "")
     if used_nm:
         st.markdown('<div class="k-card">', unsafe_allow_html=True)
@@ -583,9 +597,9 @@ with tab_home:
                 st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
-# -------------------------
+# =========================================================
 # ⭐ STANDARD
-# -------------------------
+# =========================================================
 with tab_std:
     st.subheader("⭐ Standardvarer")
     st.caption("Sorteret efter kategori. Tryk ➕ for at tilføje.")
@@ -614,7 +628,10 @@ with tab_std:
             with c1:
                 st.markdown(f'<div class="k-title">{it.get("name","")}</div>', unsafe_allow_html=True)
             with c2:
-                st.markdown(f"<div class='k-muted' style='text-align:center; font-weight:850;'>{it.get('default_qty',1)}</div>", unsafe_allow_html=True)
+                st.markdown(
+                    f"<div class='k-muted' style='text-align:center; font-weight:850;'>{it.get('default_qty',1)}</div>",
+                    unsafe_allow_html=True,
+                )
             with c3:
                 if st.button("➕ Tilføj", key=f"stdadd_{it['id']}"):
                     add_or_merge_shopping(
@@ -634,9 +651,9 @@ with tab_std:
                     st.rerun()
             st.markdown("</div>", unsafe_allow_html=True)
 
-# -------------------------
-# ⚙️ INDSTILLINGER
-# -------------------------
+# =========================================================
+# ⚙️ SETTINGS
+# =========================================================
 with tab_settings:
     st.subheader("⚙️ Indstillinger")
     st.caption("Tilføj butikker/kategorier/placeringer og vælg defaults.")
@@ -656,6 +673,8 @@ with tab_settings:
         index=S["home_locations"].index(settings.get("default_home_location", "Køleskab")) if settings.get("default_home_location", "Køleskab") in S["home_locations"] else 0,
         key="set_default_home",
     )
+
+    settings["show_bought"] = st.toggle("Vis købte varer som standard", value=bool(settings.get("show_bought", False)), key="set_show_bought")
 
     S["settings"] = settings
     persist()
