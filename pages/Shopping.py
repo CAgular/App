@@ -17,7 +17,7 @@ st.title("🛒 Shopping")
 st.caption("Hurtig, mobil-venlig indkøbsliste med standardvarer + hjemme-lager.")
 
 # =========================================================
-# Mobile-first styling (compact + stable on iPhone)
+# Styling (compact list, no weird wrappers)
 # =========================================================
 st.markdown(
     """
@@ -31,18 +31,16 @@ st.markdown(
         border-radius: 14px !important;
       }
 
-      /* Default buttons NOT full width */
+      /* Buttons - not full width by default */
       .stButton>button {
         width: auto;
         padding: 0.52rem 0.72rem;
         border-radius: 14px;
         font-weight: 650;
       }
-
-      /* Full-width only where needed */
       .btn-full .stButton>button { width: 100%; }
 
-      /* Icon buttons (compact) */
+      /* Icon buttons */
       .btn-icon .stButton>button {
         width: 44px;
         min-width: 44px;
@@ -52,25 +50,26 @@ st.markdown(
         font-weight: 850;
       }
 
-      /* Tiny selectbox for qty */
-      .qtybox div[data-baseweb="select"] > div {
-        min-height: 40px !important;
-        height: 40px !important;
-        padding-top: 0 !important;
-        padding-bottom: 0 !important;
-      }
-      .qtybox div[data-baseweb="select"] { width: 78px; } /* keeps it compact */
-
-      /* Compact card */
-      .k-card {
+      /* Compact row container */
+      .rowbox {
         border: 1px solid rgba(49, 51, 63, 0.14);
         border-radius: 14px;
-        padding: 0.34rem 0.55rem;
+        padding: 0.38rem 0.55rem;
         margin: 0.12rem 0;
         background: rgba(255,255,255,0.02);
       }
-
-      .k-title { font-weight: 760; font-size: 1.02rem; line-height: 1.15; margin: 0; }
+      .rowtitle {
+        font-weight: 760;
+        font-size: 1.02rem;
+        line-height: 1.15;
+        margin: 0;
+      }
+      .rowmeta {
+        opacity: 0.80;
+        font-weight: 800;
+        font-size: 0.92rem;
+        white-space: nowrap;
+      }
 
       h4 { margin-top: 0.40rem; margin-bottom: 0.12rem; }
       h3 { margin-top: 0.55rem; margin-bottom: 0.12rem; }
@@ -84,7 +83,7 @@ st.markdown(
 # =========================================================
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
-DATA_FILE = DATA_DIR / "shopping_v6_5.json"
+DATA_FILE = DATA_DIR / "shopping_v6_6.json"
 
 DEFAULT_STORES = ["Netto", "Rema 1000", "Føtex", "Lidl", "Apotek", "Bauhaus", "Andet"]
 DEFAULT_CATEGORIES = [
@@ -123,13 +122,13 @@ def save_data(payload: Dict) -> None:
 
 
 def ensure_state():
-    if "shopping_v6_5" in st.session_state:
+    if "shopping_v6_6" in st.session_state:
         return
 
     data = load_data() or {}
     settings = data.get("settings", {}) if isinstance(data.get("settings", {}), dict) else {}
 
-    st.session_state.shopping_v6_5 = {
+    st.session_state.shopping_v6_6 = {
         "shopping_items": data.get("shopping_items", []),
         "standard_items": data.get("standard_items", []),
         "home_items": data.get("home_items", []),
@@ -148,7 +147,7 @@ def ensure_state():
 
 
 def persist():
-    S = st.session_state.shopping_v6_5
+    S = st.session_state.shopping_v6_6
     payload = {
         "shopping_items": S["shopping_items"],
         "standard_items": S["standard_items"],
@@ -165,7 +164,7 @@ def persist():
 
 
 ensure_state()
-S = st.session_state.shopping_v6_5
+S = st.session_state.shopping_v6_6
 
 
 def normalize_name(name: str) -> str:
@@ -316,14 +315,6 @@ def delete_open_item(item_id: str):
     persist()
 
 
-def set_qty(item_id: str, new_qty: int):
-    for it in S["shopping_items"]:
-        if it["id"] == item_id and it.get("status") == "open":
-            it["qty"] = max(1, int(new_qty))
-            persist()
-            return
-
-
 # =========================================================
 # Stable input keys + safe reset pattern
 # =========================================================
@@ -459,7 +450,6 @@ with tab_shop:
         st.info("Ingen varer på listen.")
     else:
         last_group = None
-        qty_options = list(range(1, 21))  # 1..20
 
         for it in open_items:
             group = f"{it.get('store','')} · {it.get('category','')}"
@@ -467,35 +457,16 @@ with tab_shop:
                 st.markdown(f"#### {group}")
                 last_group = group
 
-            st.markdown('<div class="k-card">', unsafe_allow_html=True)
+            # We avoid any extra wrappers that can create "oval fields"
+            st.markdown('<div class="rowbox">', unsafe_allow_html=True)
 
-            # One row: name | qty select | buy | delete
-            c_name, c_qty, c_buy, c_del = st.columns([6.2, 1.7, 1.1, 1.1], vertical_alignment="center")
+            c_name, c_qty, c_buy, c_del = st.columns([6.4, 1.0, 1.1, 1.1], vertical_alignment="center")
 
             with c_name:
-                st.markdown(f'<div class="k-title">{it.get("name","")}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="rowtitle">{it.get("name","")}</div>', unsafe_allow_html=True)
 
             with c_qty:
-                st.markdown('<div class="qtybox">', unsafe_allow_html=True)
-                current = int(it.get("qty", 1))
-                if current not in qty_options:
-                    qty_options_ext = qty_options + [current]
-                    qty_options_ext = sorted(set(qty_options_ext))
-                else:
-                    qty_options_ext = qty_options
-
-                new_qty = st.selectbox(
-                    "Antal",
-                    qty_options_ext,
-                    index=qty_options_ext.index(current),
-                    key=f"qty_{it['id']}",
-                    label_visibility="collapsed",
-                )
-                st.markdown("</div>", unsafe_allow_html=True)
-
-                if int(new_qty) != current:
-                    set_qty(it["id"], int(new_qty))
-                    st.rerun()
+                st.markdown(f'<div class="rowmeta">×{int(it.get("qty",1))}</div>', unsafe_allow_html=True)
 
             with c_buy:
                 st.markdown('<div class="btn-icon">', unsafe_allow_html=True)
