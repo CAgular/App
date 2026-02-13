@@ -17,53 +17,53 @@ st.title("🛒 Shopping")
 st.caption("Hurtig, mobil-venlig indkøbsliste med standardvarer + hjemme-lager.")
 
 # =========================================================
-# Mobile-first styling (compact cards)
+# Mobile-first styling (compact controls rows)
 # =========================================================
 st.markdown(
     """
     <style>
-      .block-container { padding-top: 0.75rem; padding-bottom: 1.25rem; max-width: 720px; }
+      .block-container { padding-top: 0.7rem; padding-bottom: 1.2rem; max-width: 720px; }
 
-      /* Default buttons (slightly smaller) */
+      /* Keep buttons from becoming huge blocks */
       .stButton>button {
-        width: 100%;
-        padding: 0.58rem 0.78rem;
-        border-radius: 14px;
-        font-weight: 650;
+        width: auto !important;
+        padding: 0.42rem 0.55rem !important;
+        border-radius: 12px !important;
+        font-weight: 700 !important;
       }
 
-      /* Inputs */
-      div[data-testid="stTextInput"] input,
+      /* Inputs more compact */
       div[data-testid="stNumberInput"] input,
+      div[data-testid="stTextInput"] input,
       div[data-testid="stSelectbox"] div {
-        border-radius: 14px !important;
+        border-radius: 12px !important;
       }
 
-      /* Compact card for list rows */
-      .k-card {
+      /* Compact item row "card" */
+      .k-row {
         border: 1px solid rgba(49, 51, 63, 0.14);
         border-radius: 14px;
-        padding: 0.34rem 0.55rem;      /* tighter */
-        margin: 0.12rem 0;            /* much tighter */
+        padding: 0.40rem 0.55rem;
+        margin: 0.16rem 0;
         background: rgba(255,255,255,0.02);
       }
 
-      .k-title { font-weight: 760; font-size: 1.02rem; line-height: 1.10; margin: 0; padding: 0; }
-      .k-sub   { opacity: 0.0; height: 0; margin: 0; } /* keep empty for now */
-
-      /* Smaller +/- and icon buttons */
-      .k-tiny .stButton>button {
-        padding: 0.36rem 0.42rem;
-        border-radius: 12px;
-        font-weight: 760;
+      .k-name {
+        font-weight: 780;
+        font-size: 1.02rem;
+        line-height: 1.15;
       }
 
-      /* Make markdown headings tighter */
-      h4 { margin-top: 0.40rem; margin-bottom: 0.12rem; }
-      h3 { margin-top: 0.55rem; margin-bottom: 0.12rem; }
+      /* Tighter gaps between columns */
+      div[data-testid="stHorizontalBlock"] { gap: 0.35rem; }
 
-      /* reduce vertical gaps between elements */
-      div[data-testid="stVerticalBlock"] { gap: 0.35rem; }
+      /* Reduce vertical spacing inside widgets */
+      .stNumberInput, .stCheckbox { margin-top: -6px; }
+
+      /* On small screens, allow wrap if needed but keep it tight */
+      @media (max-width: 480px) {
+        .k-name { font-size: 1.00rem; }
+      }
     </style>
     """,
     unsafe_allow_html=True,
@@ -74,7 +74,7 @@ st.markdown(
 # =========================================================
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
-DATA_FILE = DATA_DIR / "shopping_v6_3.json"
+DATA_FILE = DATA_DIR / "shopping_v6_5.json"
 
 DEFAULT_STORES = ["Netto", "Rema 1000", "Føtex", "Lidl", "Apotek", "Bauhaus", "Andet"]
 DEFAULT_CATEGORIES = [
@@ -113,13 +113,13 @@ def save_data(payload: Dict) -> None:
 
 
 def ensure_state():
-    if "shopping_v6_3" in st.session_state:
+    if "shopping_v6_5" in st.session_state:
         return
 
     data = load_data() or {}
     settings = data.get("settings", {}) if isinstance(data.get("settings", {}), dict) else {}
 
-    st.session_state.shopping_v6_3 = {
+    st.session_state.shopping_v6_5 = {
         "shopping_items": data.get("shopping_items", []),
         "standard_items": data.get("standard_items", []),
         "home_items": data.get("home_items", []),
@@ -138,7 +138,7 @@ def ensure_state():
 
 
 def persist():
-    S = st.session_state.shopping_v6_3
+    S = st.session_state.shopping_v6_5
     payload = {
         "shopping_items": S["shopping_items"],
         "standard_items": S["standard_items"],
@@ -155,7 +155,7 @@ def persist():
 
 
 ensure_state()
-S = st.session_state.shopping_v6_3
+S = st.session_state.shopping_v6_5
 
 
 def normalize_name(name: str) -> str:
@@ -301,21 +301,31 @@ def mark_bought(item_id: str):
             return
 
 
-def change_qty(item_id: str, delta: int):
-    for it in S["shopping_items"]:
-        if it["id"] == item_id and it.get("status") == "open":
-            it["qty"] = max(1, int(it.get("qty", 1)) + int(delta))
-            persist()
-            return
-
-
 def delete_open_item(item_id: str):
     S["shopping_items"] = [x for x in S["shopping_items"] if x["id"] != item_id]
     persist()
 
 
+# --- NEW: compact row controls callbacks ---
+def _set_qty(item_id: str, state_key: str):
+    val = int(st.session_state.get(state_key, 1) or 1)
+    val = max(1, val)
+    for it in S["shopping_items"]:
+        if it["id"] == item_id and it.get("status") == "open":
+            it["qty"] = val
+            persist()
+            return
+
+
+def _buy_if_checked(item_id: str, state_key: str):
+    checked = bool(st.session_state.get(state_key, False))
+    if checked:
+        mark_bought(item_id)
+        # no need to reset checkbox; item disappears on rerun
+
+
 # =========================================================
-# Stable input keys + safe reset pattern
+# Stable input keys + safe reset pattern (for Add form)
 # =========================================================
 K_NAME = "add_name"
 K_CAT = "add_category"
@@ -368,7 +378,7 @@ tab_shop, tab_home, tab_std, tab_settings = st.tabs(["🧾 Indkøb", "🏠 Hjemm
 with tab_shop:
     st.subheader("➕ Tilføj")
 
-    # safe reset before rendering widgets
+    # safe reset before widgets render
     if st.session_state.get(K_RESET, False):
         reset_add_form_defaults()
 
@@ -443,11 +453,12 @@ with tab_shop:
     open_items = [x for x in items if x.get("status") == "open"]
     bought_items = [x for x in items if x.get("status") == "bought"]
 
-    # Sorting by store/category/name (even if not shown per row)
+    # Sorting by store/category/name
     open_items.sort(key=lambda x: (x.get("store", ""), x.get("category", ""), x.get("name", "").lower()))
     bought_items.sort(key=lambda x: (x.get("bought_at") or ""), reverse=True)
 
-    st.subheader("🧾 Indkøbsliste")
+    st.subheader("🧾 Indkøbsliste (kompakt)")
+
     if not open_items:
         st.info("Ingen varer på listen.")
     else:
@@ -458,43 +469,42 @@ with tab_shop:
                 st.markdown(f"#### {group}")
                 last_group = group
 
-            st.markdown('<div class="k-card">', unsafe_allow_html=True)
+            st.markdown('<div class="k-row">', unsafe_allow_html=True)
 
-            # LINE 1: Name + qty controls (compact)
-            # Use fewer columns to reduce wrapping on iPhone.
-            c_name, c_minus, c_qty, c_plus = st.columns([7.2, 1.05, 1.15, 1.05], vertical_alignment="center")
+            # One compact control row: name | qty (number_input) | bought checkbox | trash
+            c_name, c_qty, c_buy, c_del = st.columns([6.0, 1.65, 1.25, 0.95], vertical_alignment="center")
+
             with c_name:
-                st.markdown(f'<div class="k-title">{it.get("name","")}</div>', unsafe_allow_html=True)
-            with c_minus:
-                st.markdown('<div class="k-tiny">', unsafe_allow_html=True)
-                if st.button("➖", key=f"m_{it['id']}"):
-                    change_qty(it["id"], -1)
-                    st.rerun()
-                st.markdown("</div>", unsafe_allow_html=True)
-            with c_qty:
-                st.markdown(
-                    f"<div style='text-align:center; font-weight:850; opacity:0.85;'>{it.get('qty',1)}</div>",
-                    unsafe_allow_html=True,
-                )
-            with c_plus:
-                st.markdown('<div class="k-tiny">', unsafe_allow_html=True)
-                if st.button("➕", key=f"p_{it['id']}"):
-                    change_qty(it["id"], +1)
-                    st.rerun()
-                st.markdown("</div>", unsafe_allow_html=True)
+                st.markdown(f'<div class="k-name">{it.get("name","")}</div>', unsafe_allow_html=True)
 
-            # LINE 2: Big buy + tiny delete
-            c_buy, c_del = st.columns([6.5, 1.5], vertical_alignment="center")
+            with c_qty:
+                qty_key = f"qty_{it['id']}"
+                st.session_state.setdefault(qty_key, int(it.get("qty", 1)))
+                st.number_input(
+                    "Antal",
+                    min_value=1,
+                    step=1,
+                    key=qty_key,
+                    label_visibility="collapsed",
+                    on_change=_set_qty,
+                    args=(it["id"], qty_key),
+                )
+
             with c_buy:
-                if st.button("✅ Købt", key=f"buy_{it['id']}"):
-                    mark_bought(it["id"])
-                    st.rerun()
+                buy_key = f"buychk_{it['id']}"
+                st.session_state.setdefault(buy_key, False)
+                st.checkbox(
+                    "Købt",
+                    key=buy_key,
+                    label_visibility="collapsed",
+                    on_change=_buy_if_checked,
+                    args=(it["id"], buy_key),
+                )
+
             with c_del:
-                st.markdown('<div class="k-tiny">', unsafe_allow_html=True)
-                if st.button("🗑️", key=f"d_{it['id']}"):
+                if st.button("🗑️", key=f"del_{it['id']}"):
                     delete_open_item(it["id"])
                     st.rerun()
-                st.markdown("</div>", unsafe_allow_html=True)
 
             st.markdown("</div>", unsafe_allow_html=True)
 
