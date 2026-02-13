@@ -17,7 +17,7 @@ st.title("🛒 Shopping")
 st.caption("Hurtig, mobil-venlig indkøbsliste med standardvarer + hjemme-lager.")
 
 # =========================================================
-# Mobile-first styling (compact + robust)
+# Mobile-first styling (compact + stable on iPhone)
 # =========================================================
 st.markdown(
     """
@@ -31,58 +31,47 @@ st.markdown(
         border-radius: 14px !important;
       }
 
-      /* Default buttons: NOT full width */
+      /* Default buttons NOT full width */
       .stButton>button {
         width: auto;
-        padding: 0.55rem 0.75rem;
+        padding: 0.52rem 0.72rem;
         border-radius: 14px;
         font-weight: 650;
       }
 
-      /* Full-width only when wrapped in .btn-full */
-      .btn-full .stButton>button {
-        width: 100%;
-      }
+      /* Full-width only where needed */
+      .btn-full .stButton>button { width: 100%; }
 
-      /* Small icon buttons */
+      /* Icon buttons (compact) */
       .btn-icon .stButton>button {
         width: 44px;
         min-width: 44px;
         height: 40px;
         padding: 0;
         border-radius: 12px;
-        font-weight: 800;
+        font-weight: 850;
       }
 
-      /* Compact card for list rows */
+      /* Tiny selectbox for qty */
+      .qtybox div[data-baseweb="select"] > div {
+        min-height: 40px !important;
+        height: 40px !important;
+        padding-top: 0 !important;
+        padding-bottom: 0 !important;
+      }
+      .qtybox div[data-baseweb="select"] { width: 78px; } /* keeps it compact */
+
+      /* Compact card */
       .k-card {
         border: 1px solid rgba(49, 51, 63, 0.14);
         border-radius: 14px;
-        padding: 0.38rem 0.55rem;
-        margin: 0.14rem 0;
+        padding: 0.34rem 0.55rem;
+        margin: 0.12rem 0;
         background: rgba(255,255,255,0.02);
       }
 
-      .k-title {
-        font-weight: 760;
-        font-size: 1.02rem;
-        line-height: 1.15;
-        margin: 0;
-      }
+      .k-title { font-weight: 760; font-size: 1.02rem; line-height: 1.15; margin: 0; }
 
-      .k-pill {
-        display: inline-block;
-        padding: 0.12rem 0.45rem;
-        border-radius: 999px;
-        border: 1px solid rgba(49, 51, 63, 0.18);
-        font-size: 0.88rem;
-        font-weight: 800;
-        opacity: 0.85;
-        vertical-align: middle;
-        margin-left: 0.35rem;
-      }
-
-      /* tighter headings */
       h4 { margin-top: 0.40rem; margin-bottom: 0.12rem; }
       h3 { margin-top: 0.55rem; margin-bottom: 0.12rem; }
     </style>
@@ -95,7 +84,7 @@ st.markdown(
 # =========================================================
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
-DATA_FILE = DATA_DIR / "shopping_v6_4.json"
+DATA_FILE = DATA_DIR / "shopping_v6_5.json"
 
 DEFAULT_STORES = ["Netto", "Rema 1000", "Føtex", "Lidl", "Apotek", "Bauhaus", "Andet"]
 DEFAULT_CATEGORIES = [
@@ -134,13 +123,13 @@ def save_data(payload: Dict) -> None:
 
 
 def ensure_state():
-    if "shopping_v6_4" in st.session_state:
+    if "shopping_v6_5" in st.session_state:
         return
 
     data = load_data() or {}
     settings = data.get("settings", {}) if isinstance(data.get("settings", {}), dict) else {}
 
-    st.session_state.shopping_v6_4 = {
+    st.session_state.shopping_v6_5 = {
         "shopping_items": data.get("shopping_items", []),
         "standard_items": data.get("standard_items", []),
         "home_items": data.get("home_items", []),
@@ -159,7 +148,7 @@ def ensure_state():
 
 
 def persist():
-    S = st.session_state.shopping_v6_4
+    S = st.session_state.shopping_v6_5
     payload = {
         "shopping_items": S["shopping_items"],
         "standard_items": S["standard_items"],
@@ -176,7 +165,7 @@ def persist():
 
 
 ensure_state()
-S = st.session_state.shopping_v6_4
+S = st.session_state.shopping_v6_5
 
 
 def normalize_name(name: str) -> str:
@@ -322,17 +311,17 @@ def mark_bought(item_id: str):
             return
 
 
-def change_qty(item_id: str, delta: int):
-    for it in S["shopping_items"]:
-        if it["id"] == item_id and it.get("status") == "open":
-            it["qty"] = max(1, int(it.get("qty", 1)) + int(delta))
-            persist()
-            return
-
-
 def delete_open_item(item_id: str):
     S["shopping_items"] = [x for x in S["shopping_items"] if x["id"] != item_id]
     persist()
+
+
+def set_qty(item_id: str, new_qty: int):
+    for it in S["shopping_items"]:
+        if it["id"] == item_id and it.get("status") == "open":
+            it["qty"] = max(1, int(new_qty))
+            persist()
+            return
 
 
 # =========================================================
@@ -356,7 +345,6 @@ st.session_state.setdefault(K_RESET, False)
 
 
 def reset_add_form_defaults():
-    """Must run BEFORE widgets are rendered."""
     st.session_state[K_NAME] = ""
     st.session_state[K_QTY] = 1
     st.session_state[K_STD] = False
@@ -471,6 +459,8 @@ with tab_shop:
         st.info("Ingen varer på listen.")
     else:
         last_group = None
+        qty_options = list(range(1, 21))  # 1..20
+
         for it in open_items:
             group = f"{it.get('store','')} · {it.get('category','')}"
             if group != last_group:
@@ -479,39 +469,42 @@ with tab_shop:
 
             st.markdown('<div class="k-card">', unsafe_allow_html=True)
 
-            # Line 1: Name + qty pill
-            name = it.get("name", "")
-            qty = int(it.get("qty", 1))
-            st.markdown(
-                f'<div class="k-title">{name}<span class="k-pill">×{qty}</span></div>',
-                unsafe_allow_html=True,
-            )
+            # One row: name | qty select | buy | delete
+            c_name, c_qty, c_buy, c_del = st.columns([6.2, 1.7, 1.1, 1.1], vertical_alignment="center")
 
-            # Line 2: actions as small icons (should fit on iPhone)
-            a1, a2, a3, a4 = st.columns([1, 1, 1, 1], vertical_alignment="center")
+            with c_name:
+                st.markdown(f'<div class="k-title">{it.get("name","")}</div>', unsafe_allow_html=True)
 
-            with a1:
-                st.markdown('<div class="btn-icon">', unsafe_allow_html=True)
-                if st.button("➖", key=f"m_{it['id']}"):
-                    change_qty(it["id"], -1)
-                    st.rerun()
+            with c_qty:
+                st.markdown('<div class="qtybox">', unsafe_allow_html=True)
+                current = int(it.get("qty", 1))
+                if current not in qty_options:
+                    qty_options_ext = qty_options + [current]
+                    qty_options_ext = sorted(set(qty_options_ext))
+                else:
+                    qty_options_ext = qty_options
+
+                new_qty = st.selectbox(
+                    "Antal",
+                    qty_options_ext,
+                    index=qty_options_ext.index(current),
+                    key=f"qty_{it['id']}",
+                    label_visibility="collapsed",
+                )
                 st.markdown("</div>", unsafe_allow_html=True)
 
-            with a2:
-                st.markdown('<div class="btn-icon">', unsafe_allow_html=True)
-                if st.button("➕", key=f"p_{it['id']}"):
-                    change_qty(it["id"], +1)
+                if int(new_qty) != current:
+                    set_qty(it["id"], int(new_qty))
                     st.rerun()
-                st.markdown("</div>", unsafe_allow_html=True)
 
-            with a3:
+            with c_buy:
                 st.markdown('<div class="btn-icon">', unsafe_allow_html=True)
                 if st.button("✅", key=f"buy_{it['id']}"):
                     mark_bought(it["id"])
                     st.rerun()
                 st.markdown("</div>", unsafe_allow_html=True)
 
-            with a4:
+            with c_del:
                 st.markdown('<div class="btn-icon">', unsafe_allow_html=True)
                 if st.button("🗑️", key=f"d_{it['id']}"):
                     delete_open_item(it["id"])
