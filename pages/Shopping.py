@@ -14,60 +14,60 @@ st.set_page_config(page_title=f"{APP_TITLE} • Shopping", page_icon="🛒", lay
 st.link_button("⬅️ Tilbage til forside", "/")
 
 st.title("🛒 Shopping")
-st.caption("Hurtig, mobil-venlig indkøbsliste med standardvarer + hjemme-lager.")
 
 # =========================================================
-# Styling (compact rows + tiny checkbox)
+# Styling: compact + iPhone-friendly, no row tips
 # =========================================================
 st.markdown(
     """
     <style>
-      .block-container { padding-top: 0.65rem; padding-bottom: 1.10rem; max-width: 720px; }
+      .block-container { padding-top: 0.65rem; padding-bottom: 1.1rem; max-width: 720px; }
 
-      /* Inputs */
+      /* Make Streamlit spacing tighter */
+      div[data-testid="stVerticalBlock"] { gap: 0.28rem; }
+      h4 { margin-top: 0.35rem; margin-bottom: 0.10rem; }
+      h3 { margin-top: 0.45rem; margin-bottom: 0.10rem; }
+
+      /* Inputs rounded */
       div[data-testid="stTextInput"] input,
       div[data-testid="stNumberInput"] input,
       div[data-testid="stSelectbox"] div {
         border-radius: 14px !important;
       }
 
-      /* Buttons - not full width by default */
+      /* Buttons: not full width */
       .stButton>button {
         width: auto;
-        padding: 0.50rem 0.68rem;
+        padding: 0.46rem 0.62rem;
         border-radius: 14px;
         font-weight: 650;
       }
-      .btn-full .stButton>button { width: 100%; }
 
-      /* Icon buttons */
+      /* Tiny icon button */
       .btn-icon .stButton>button {
-        width: 42px;
-        min-width: 42px;
-        height: 38px;
+        width: 40px;
+        min-width: 40px;
+        height: 36px;
         padding: 0;
         border-radius: 12px;
         font-weight: 850;
       }
 
-      /* Compact row container */
-      .rowbox {
+      /* Make checkboxes smaller (best-effort) */
+      div[data-testid="stCheckbox"] input[type="checkbox"]{
+        transform: scale(0.85);
+        transform-origin: left center;
+      }
+
+      /* Compact row look */
+      .row {
         border: 1px solid rgba(49, 51, 63, 0.14);
         border-radius: 14px;
-        padding: 0.30rem 0.50rem;
+        padding: 0.28rem 0.50rem;
         margin: 0.10rem 0;
         background: rgba(255,255,255,0.02);
       }
-
-      /* One-line row layout using CSS grid */
-      .rowgrid {
-        display: grid;
-        grid-template-columns: 22px 1fr auto 46px;
-        align-items: center;
-        column-gap: 10px;
-      }
-
-      .r-name {
+      .name {
         font-weight: 760;
         font-size: 1.00rem;
         line-height: 1.10;
@@ -75,24 +75,13 @@ st.markdown(
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-
-      .r-qty {
-        opacity: 0.80;
+      .qty {
+        opacity: 0.78;
         font-weight: 850;
         font-size: 0.92rem;
         white-space: nowrap;
+        text-align: right;
       }
-
-      /* Tiny checkbox */
-      .tinycb {
-        width: 18px;
-        height: 18px;
-        accent-color: #2ecc71;
-      }
-
-      /* Headings tighter */
-      h4 { margin-top: 0.38rem; margin-bottom: 0.10rem; }
-      h3 { margin-top: 0.50rem; margin-bottom: 0.10rem; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -103,7 +92,7 @@ st.markdown(
 # =========================================================
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
-DATA_FILE = DATA_DIR / "shopping_v6_7.json"
+DATA_FILE = DATA_DIR / "shopping_simple_v1.json"
 
 DEFAULT_STORES = ["Netto", "Rema 1000", "Føtex", "Lidl", "Apotek", "Bauhaus", "Andet"]
 DEFAULT_CATEGORIES = [
@@ -142,14 +131,14 @@ def save_data(payload: Dict) -> None:
 
 
 def ensure_state():
-    if "shopping_v6_7" in st.session_state:
+    if "shopping_simple" in st.session_state:
         return
 
     data = load_data() or {}
     settings = data.get("settings", {}) if isinstance(data.get("settings", {}), dict) else {}
 
-    st.session_state.shopping_v6_7 = {
-        "shopping_items": data.get("shopping_items", []),
+    st.session_state.shopping_simple = {
+        "shopping_items": data.get("shopping_items", []),   # open + bought in same list
         "standard_items": data.get("standard_items", []),
         "home_items": data.get("home_items", []),
         "memory": data.get("memory", {}),
@@ -167,7 +156,7 @@ def ensure_state():
 
 
 def persist():
-    S = st.session_state.shopping_v6_7
+    S = st.session_state.shopping_simple
     payload = {
         "shopping_items": S["shopping_items"],
         "standard_items": S["standard_items"],
@@ -183,18 +172,6 @@ def persist():
     S["meta"]["last_saved"] = payload["meta"]["last_saved"]
 
 
-ensure_state()
-S = st.session_state.shopping_v6_7
-
-
-def normalize_name(name: str) -> str:
-    return (name or "").strip()
-
-
-def key(name: str) -> str:
-    return normalize_name(name).lower()
-
-
 def ensure_ids(items: List[Dict]) -> List[Dict]:
     out = []
     for it in items:
@@ -204,16 +181,29 @@ def ensure_ids(items: List[Dict]) -> List[Dict]:
     return out
 
 
+def normalize_name(name: str) -> str:
+    return (name or "").strip()
+
+
+def k(name: str) -> str:
+    return normalize_name(name).lower()
+
+
+ensure_state()
+S = st.session_state.shopping_simple
 S["shopping_items"] = ensure_ids(S["shopping_items"])
 S["standard_items"] = ensure_ids(S["standard_items"])
 S["home_items"] = ensure_ids(S["home_items"])
 
 
+# =========================================================
+# Core operations
+# =========================================================
 def upsert_memory(name: str, category: str, store: str, default_qty: int, is_standard: bool):
-    k = key(name)
-    if not k:
+    kk = k(name)
+    if not kk:
         return
-    S["memory"][k] = {
+    S["memory"][kk] = {
         "name": normalize_name(name),
         "category": category,
         "store": store,
@@ -223,15 +213,11 @@ def upsert_memory(name: str, category: str, store: str, default_qty: int, is_sta
     }
 
 
-def suggestions(prefix: str, limit: int = 12) -> List[Dict]:
+def suggestions(prefix: str, limit: int = 10) -> List[Dict]:
     p = (prefix or "").strip().lower()
     if not p:
         return []
-    hits = []
-    for v in S["memory"].values():
-        nm = (v.get("name") or "").strip()
-        if nm.lower().startswith(p):
-            hits.append(v)
+    hits = [v for v in S["memory"].values() if (v.get("name") or "").lower().startswith(p)]
     hits.sort(key=lambda x: (len(x.get("name", "")), x.get("updated_at", "")))
     return hits[:limit]
 
@@ -240,15 +226,11 @@ def add_or_merge_shopping(name: str, qty: int, category: str, store: str):
     name = normalize_name(name)
     if not name:
         return
-    qty = max(1, int(qty))
 
+    qty = max(1, int(qty))
+    # merge only with same name+cat+store and status open
     for it in S["shopping_items"]:
-        if (
-            it.get("status", "open") == "open"
-            and key(it.get("name", "")) == key(name)
-            and it.get("category") == category
-            and it.get("store") == store
-        ):
+        if it.get("status") == "open" and k(it.get("name", "")) == k(name) and it.get("category") == category and it.get("store") == store:
             it["qty"] = int(it.get("qty", 1)) + qty
             persist()
             return
@@ -273,7 +255,7 @@ def add_or_update_standard(name: str, default_qty: int, category: str, store: st
     if not name:
         return
     for it in S["standard_items"]:
-        if key(it.get("name", "")) == key(name) and it.get("category") == category and it.get("store") == store:
+        if k(it.get("name", "")) == k(name) and it.get("category") == category and it.get("store") == store:
             it["default_qty"] = max(1, int(default_qty))
             persist()
             return
@@ -290,7 +272,7 @@ def add_to_home(name: str, qty: int, location: str, category: str, store: str):
     qty = max(1, int(qty))
 
     for h in S["home_items"]:
-        if key(h.get("name", "")) == key(name) and h.get("location") == location:
+        if k(h.get("name", "")) == k(name) and h.get("location") == location:
             h["qty"] = int(h.get("qty", 1)) + qty
             h["category"] = category
             h["store"] = store
@@ -330,13 +312,27 @@ def mark_bought(item_id: str):
             return
 
 
-def delete_open_item(item_id: str):
+def delete_item(item_id: str):
     S["shopping_items"] = [x for x in S["shopping_items"] if x["id"] != item_id]
     persist()
 
 
 # =========================================================
-# Stable add-form keys + safe reset pattern
+# Checkbox callback (instant buy, no extra buttons/tips)
+# =========================================================
+st.session_state.setdefault("_do_rerun", False)
+
+
+def on_bought_toggle(item_id: str, cb_key: str):
+    # if checked -> buy instantly, then reset checkbox state so it doesn't stay ticked
+    if st.session_state.get(cb_key, False):
+        mark_bought(item_id)
+        st.session_state[cb_key] = False
+        st.session_state["_do_rerun"] = True
+
+
+# =========================================================
+# Add-form: stable reset pattern
 # =========================================================
 K_NAME = "add_name"
 K_CAT = "add_category"
@@ -355,7 +351,7 @@ st.session_state.setdefault(K_LAST_AUTOFILL, "")
 st.session_state.setdefault(K_RESET, False)
 
 
-def reset_add_form_defaults():
+def reset_add_form():
     st.session_state[K_NAME] = ""
     st.session_state[K_QTY] = 1
     st.session_state[K_STD] = False
@@ -363,11 +359,11 @@ def reset_add_form_defaults():
     st.session_state[K_RESET] = False
 
 
-def maybe_autofill_from_memory():
+def maybe_autofill():
     nm = normalize_name(st.session_state.get(K_NAME, ""))
     if not nm:
         return
-    mk = key(nm)
+    mk = k(nm)
     mem = S["memory"].get(mk)
     if mem and st.session_state.get(K_LAST_AUTOFILL, "") != mk:
         st.session_state[K_CAT] = mem.get("category", st.session_state[K_CAT])
@@ -386,26 +382,30 @@ tab_shop, tab_home, tab_std, tab_settings = st.tabs(["🧾 Indkøb", "🏠 Hjemm
 # 🧾 SHOPPING
 # =========================================================
 with tab_shop:
-    st.subheader("➕ Tilføj")
-
+    # Add
     if st.session_state.get(K_RESET, False):
-        reset_add_form_defaults()
+        reset_add_form()
 
-    maybe_autofill_from_memory()
+    maybe_autofill()
 
-    with st.form("add_item_form"):
+    with st.form("add_item_form", clear_on_submit=False):
         st.text_input("Vare", placeholder="Skriv fx: bananer", key=K_NAME)
-        st.selectbox("Kategori", S["categories"], key=K_CAT)
-        st.selectbox("Butik", S["stores"], key=K_STORE)
-        st.number_input("Antal", min_value=1, step=1, key=K_QTY)
-        st.checkbox("⭐ Standardvare", key=K_STD)
-        submit = st.form_submit_button("✅ Tilføj til indkøbslisten")
+        c1, c2 = st.columns([1, 1], vertical_alignment="center")
+        with c1:
+            st.selectbox("Kategori", S["categories"], key=K_CAT)
+        with c2:
+            st.selectbox("Butik", S["stores"], key=K_STORE)
+        c3, c4 = st.columns([1, 1], vertical_alignment="center")
+        with c3:
+            st.number_input("Antal", min_value=1, step=1, key=K_QTY)
+        with c4:
+            st.checkbox("Standardvare", key=K_STD)
+
+        submit = st.form_submit_button("Tilføj")
 
     if submit:
         nm = normalize_name(st.session_state.get(K_NAME, ""))
-        if not nm:
-            st.warning("Skriv et varenavn.")
-        else:
+        if nm:
             category = st.session_state.get(K_CAT, "Andet")
             store = st.session_state.get(K_STORE, S["settings"].get("default_store", "Netto"))
             qty = int(st.session_state.get(K_QTY, 1) or 1)
@@ -417,44 +417,40 @@ with tab_shop:
                 add_or_update_standard(nm, qty, category, store)
 
             st.session_state[K_RESET] = True
-            st.success("Tilføjet ✅")
             st.rerun()
+        else:
+            st.warning("Skriv et varenavn.")
 
-    with st.expander("✨ Forslag (fra historik)", expanded=False):
-        pref = st.text_input("Skriv start (fx 'ban')", key="pref_sug")
-        for sug in suggestions(pref, limit=12):
-            label = f"{sug.get('name','')} (antal {sug.get('default_qty',1)})"
-            if st.button(label, key=f"sug_{key(sug.get('name',''))}_{sug.get('store','')}_{sug.get('category','')}"):
+    # Suggestions (minimal)
+    with st.expander("Forslag", expanded=False):
+        pref = st.text_input("Start", placeholder="fx ban", key="pref_sug")
+        for sug in suggestions(pref, limit=10):
+            if st.button(sug.get("name", ""), key=f"sug_{k(sug.get('name',''))}"):
                 st.session_state[K_NAME] = sug.get("name", "")
                 st.session_state[K_CAT] = sug.get("category", "Andet")
                 st.session_state[K_STORE] = sug.get("store", S["settings"].get("default_store", "Netto"))
                 st.session_state[K_QTY] = int(sug.get("default_qty", 1) or 1)
                 st.session_state[K_STD] = bool(sug.get("is_standard", False))
-                st.session_state[K_LAST_AUTOFILL] = key(sug.get("name", ""))
+                st.session_state[K_LAST_AUTOFILL] = k(sug.get("name", ""))
                 st.rerun()
 
-    st.divider()
-
-    # Filters
-    settings = S["settings"]
-    stores = ["Alle"] + S["stores"]
-
+    # Filters (minimal)
     with st.expander("Filtre", expanded=False):
-        settings["store_filter"] = st.selectbox(
+        stores = ["Alle"] + S["stores"]
+        S["settings"]["store_filter"] = st.selectbox(
             "Butik",
             stores,
-            index=stores.index(settings.get("store_filter", "Alle")) if settings.get("store_filter", "Alle") in stores else 0,
+            index=stores.index(S["settings"].get("store_filter", "Alle")) if S["settings"].get("store_filter", "Alle") in stores else 0,
             key="filter_store",
         )
-        settings["show_bought"] = st.toggle("Vis købte varer", value=bool(settings.get("show_bought", False)), key="toggle_bought")
-        S["settings"] = settings
+        S["settings"]["show_bought"] = st.toggle("Vis købte", value=bool(S["settings"].get("show_bought", False)), key="toggle_bought")
         persist()
 
-    search = st.text_input("Søg i indkøb", placeholder="Søg…", key="shop_search")
+    search = st.text_input("Søg", placeholder="Søg…", key="shop_search")
 
     items = list(S["shopping_items"])
-    if settings.get("store_filter", "Alle") != "Alle":
-        items = [x for x in items if x.get("store") == settings["store_filter"]]
+    if S["settings"].get("store_filter", "Alle") != "Alle":
+        items = [x for x in items if x.get("store") == S["settings"]["store_filter"]]
     if search.strip():
         q = search.strip().lower()
         items = [x for x in items if q in (x.get("name", "").lower())]
@@ -465,96 +461,66 @@ with tab_shop:
     open_items.sort(key=lambda x: (x.get("store", ""), x.get("category", ""), x.get("name", "").lower()))
     bought_items.sort(key=lambda x: (x.get("bought_at") or ""), reverse=True)
 
-    st.subheader("🧾 Indkøbsliste (meget kompakt)")
+    st.subheader("Indkøbsliste")
 
     if not open_items:
-        st.info("Ingen varer på listen.")
+        st.info("Tom.")
     else:
-        # We do batch apply to keep checkbox tiny (HTML), stable and compact.
-        # Keys for checkboxes are in session_state as plain booleans.
         last_group = None
-
-        # Group items by store+category for readability
-        groups: Dict[str, List[Dict]] = {}
         for it in open_items:
-            g = f"{it.get('store','')} · {it.get('category','')}"
-            groups.setdefault(g, []).append(it)
+            group = f"{it.get('store','')} · {it.get('category','')}"
+            if group != last_group:
+                st.markdown(f"#### {group}")
+                last_group = group
 
-        for group, group_items in groups.items():
-            st.markdown(f"#### {group}")
+            st.markdown('<div class="row">', unsafe_allow_html=True)
 
-            form_key = f"form_{group}"
-            with st.form(form_key, clear_on_submit=False):
-                # render each row with a tiny checkbox using HTML + a hidden Streamlit checkbox state mirror
-                # We'll use Streamlit checkboxes (because HTML inputs don't send back reliably),
-                # but we'll squeeze them: put them in a 1-column and hide the label.
-                any_rows = False
+            # Compact one-row: checkbox | name | qty | delete
+            c_cb, c_name, c_qty, c_del = st.columns([0.8, 6.8, 1.1, 1.0], vertical_alignment="center")
 
-                for it in group_items:
-                    any_rows = True
-                    rid = it["id"]
-                    cb_key = f"cb_{rid}"
+            cb_key = f"buycb_{it['id']}"
+            with c_cb:
+                st.checkbox(
+                    "købt",
+                    key=cb_key,
+                    label_visibility="collapsed",
+                    on_change=on_bought_toggle,
+                    args=(it["id"], cb_key),
+                )
 
-                    # Row container
-                    st.markdown('<div class="rowbox">', unsafe_allow_html=True)
+            with c_name:
+                st.markdown(f'<div class="name">{it.get("name","")}</div>', unsafe_allow_html=True)
 
-                    # columns: checkbox | name | qty | delete
-                    c_cb, c_name, c_qty, c_del = st.columns([0.8, 6.6, 1.2, 1.2], vertical_alignment="center")
+            with c_qty:
+                st.markdown(f'<div class="qty">×{int(it.get("qty",1))}</div>', unsafe_allow_html=True)
 
-                    with c_cb:
-                        # Streamlit checkbox (label hidden). Small-ish, and the whole row becomes compact.
-                        # (We cannot truly shrink it to 18px reliably with Streamlit components.)
-                        st.checkbox("købt", key=cb_key, label_visibility="collapsed")
-
-                    with c_name:
-                        st.markdown(f'<div class="r-name">{it.get("name","")}</div>', unsafe_allow_html=True)
-
-                    with c_qty:
-                        st.markdown(f'<div class="r-qty">×{int(it.get("qty",1))}</div>', unsafe_allow_html=True)
-
-                    with c_del:
-                        st.markdown('<div class="btn-icon">', unsafe_allow_html=True)
-                        if st.form_submit_button("🗑️", key=f"del_{rid}"):
-                            delete_open_item(rid)
-                            st.rerun()
-                        st.markdown("</div>", unsafe_allow_html=True)
-
-                    st.markdown("</div>", unsafe_allow_html=True)
-
-                # Apply bought selections (one compact button per group)
-                cols = st.columns([2.2, 4.8])
-                with cols[0]:
-                    apply = st.form_submit_button("✅ Markér valgte som købt")
-                with cols[1]:
-                    st.caption("Tip: Kryds af ved varer og tryk knappen én gang.")
-
-                if apply and any_rows:
-                    # Mark all checked as bought
-                    for it in group_items:
-                        if st.session_state.get(f"cb_{it['id']}", False):
-                            mark_bought(it["id"])
-                            st.session_state[f"cb_{it['id']}"] = False
-                    st.success("Opdateret ✅")
+            with c_del:
+                st.markdown('<div class="btn-icon">', unsafe_allow_html=True)
+                if st.button("🗑️", key=f"del_{it['id']}"):
+                    delete_item(it["id"])
                     st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
 
-    if settings.get("show_bought", False):
-        with st.expander(f"✅ Købte varer ({len(bought_items)})", expanded=False):
-            if not bought_items:
-                st.caption("Ingen købte varer.")
-            else:
-                for it in bought_items[:120]:
-                    st.write(f"• {it.get('name','')} ×{it.get('qty',1)} — {human_time(it.get('bought_at'))}")
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        if st.session_state.get("_do_rerun", False):
+            st.session_state["_do_rerun"] = False
+            st.rerun()
+
+    if S["settings"].get("show_bought", False):
+        with st.expander(f"Købte ({len(bought_items)})", expanded=False):
+            for it in bought_items[:120]:
+                st.write(f"• {it.get('name','')} ×{it.get('qty',1)} — {human_time(it.get('bought_at'))}")
 
 # =========================================================
 # 🏠 HOME
 # =========================================================
 with tab_home:
-    st.subheader("🏠 Hjemme")
-    st.caption("Købte varer bliver automatisk lagt her. Tryk 🍽️ når noget er brugt.")
+    st.subheader("Hjemme")
 
     st.session_state.setdefault("used_name_prompt", "")
 
-    q = st.text_input("Søg i hjemme", placeholder="Søg…", key="home_search")
+    q = st.text_input("Søg", placeholder="Søg…", key="home_search")
 
     home = list(S["home_items"])
     if q.strip():
@@ -563,7 +529,7 @@ with tab_home:
     home.sort(key=lambda x: (x.get("location", ""), x.get("name", "").lower()))
 
     if not home:
-        st.info("Ingen varer derhjemme endnu. Markér noget som købt i indkøbslisten.")
+        st.info("Tom.")
     else:
         last_loc = None
         for it in home:
@@ -572,13 +538,13 @@ with tab_home:
                 st.markdown(f"#### {loc}")
                 last_loc = loc
 
-            c1, c2, c3 = st.columns([6.2, 1.2, 2.6], vertical_alignment="center")
+            c1, c2, c3 = st.columns([6.8, 1.1, 1.4], vertical_alignment="center")
             with c1:
                 st.write(it.get("name", ""))
             with c2:
                 st.write(f"×{it.get('qty',1)}")
             with c3:
-                if st.button("🍽️ Brugt", key=f"used_{it['id']}"):
+                if st.button("Brugt", key=f"used_{it['id']}"):
                     it["qty"] = max(0, int(it.get("qty", 1)) - 1)
                     it["last_used_at"] = now_iso()
                     if it["qty"] <= 0:
@@ -590,11 +556,10 @@ with tab_home:
         used_nm = st.session_state.get("used_name_prompt", "")
         if used_nm:
             st.divider()
-            st.write(f"Brugt: **{used_nm}**")
-            yes, no = st.columns([2, 1])
-            with yes:
-                if st.button("✅ Tilføj til indkøb igen", key="used_yes"):
-                    mem = S["memory"].get(key(used_nm), {})
+            cA, cB = st.columns([2, 1], vertical_alignment="center")
+            with cA:
+                if st.button("Tilføj til indkøb", key="used_add"):
+                    mem = S["memory"].get(k(used_nm), {})
                     add_or_merge_shopping(
                         used_nm,
                         int(mem.get("default_qty", 1) or 1),
@@ -602,10 +567,9 @@ with tab_home:
                         mem.get("store", S["settings"].get("default_store", "Netto")),
                     )
                     st.session_state["used_name_prompt"] = ""
-                    st.success("Tilføjet ✅")
                     st.rerun()
-            with no:
-                if st.button("❌ Nej", key="used_no"):
+            with cB:
+                if st.button("Luk", key="used_close"):
                     st.session_state["used_name_prompt"] = ""
                     st.rerun()
 
@@ -613,11 +577,9 @@ with tab_home:
 # ⭐ STANDARD
 # =========================================================
 with tab_std:
-    st.subheader("⭐ Standardvarer")
-    st.caption("Sorteret efter kategori. Tryk ➕ for at tilføje.")
+    st.subheader("Standard")
 
-    q = st.text_input("Søg i standardvarer", placeholder="Søg…", key="std_search")
-
+    q = st.text_input("Søg", placeholder="Søg…", key="std_search")
     std = list(S["standard_items"])
     if q.strip():
         qq = q.strip().lower()
@@ -626,7 +588,7 @@ with tab_std:
     std.sort(key=lambda x: (x.get("category", ""), x.get("name", "").lower(), x.get("store", "")))
 
     if not std:
-        st.info("Ingen standardvarer endnu. Kryds “Standardvare” af når du tilføjer en vare.")
+        st.info("Tom.")
     else:
         last_cat = None
         for it in std:
@@ -635,13 +597,13 @@ with tab_std:
                 st.markdown(f"#### {cat}")
                 last_cat = cat
 
-            c1, c2, c3 = st.columns([6.2, 1.2, 2.6], vertical_alignment="center")
+            c1, c2, c3 = st.columns([6.8, 1.1, 1.4], vertical_alignment="center")
             with c1:
                 st.write(it.get("name", ""))
             with c2:
                 st.write(f"×{it.get('default_qty',1)}")
             with c3:
-                if st.button("➕", key=f"stdadd_{it['id']}"):
+                if st.button("Tilføj", key=f"stdadd_{it['id']}"):
                     add_or_merge_shopping(
                         it["name"],
                         int(it.get("default_qty", 1)),
@@ -655,75 +617,55 @@ with tab_std:
                         int(it.get("default_qty", 1)),
                         True,
                     )
-                    st.success("Tilføjet ✅")
                     st.rerun()
 
 # =========================================================
 # ⚙️ SETTINGS
 # =========================================================
 with tab_settings:
-    st.subheader("⚙️ Indstillinger")
-    st.caption("Tilføj butikker/kategorier/placeringer og vælg defaults.")
+    st.subheader("Indstillinger")
 
-    settings = S["settings"]
-
-    settings["default_store"] = st.selectbox(
+    S["settings"]["default_store"] = st.selectbox(
         "Default butik",
         S["stores"],
-        index=S["stores"].index(settings.get("default_store", "Netto")) if settings.get("default_store", "Netto") in S["stores"] else 0,
+        index=S["stores"].index(S["settings"].get("default_store", "Netto")) if S["settings"].get("default_store", "Netto") in S["stores"] else 0,
         key="set_default_store",
     )
-
-    settings["default_home_location"] = st.selectbox(
-        "Default placering i Hjemme (når noget købes)",
+    S["settings"]["default_home_location"] = st.selectbox(
+        "Default hjemme",
         S["home_locations"],
-        index=S["home_locations"].index(settings.get("default_home_location", "Køleskab")) if settings.get("default_home_location", "Køleskab") in S["home_locations"] else 0,
+        index=S["home_locations"].index(S["settings"].get("default_home_location", "Køleskab")) if S["settings"].get("default_home_location", "Køleskab") in S["home_locations"] else 0,
         key="set_default_home",
     )
-
-    settings["show_bought"] = st.toggle(
-        "Vis købte varer som standard",
-        value=bool(settings.get("show_bought", False)),
-        key="set_show_bought",
-    )
-
-    S["settings"] = settings
     persist()
 
     st.divider()
-    st.subheader("➕ Tilføj til lister")
 
-    with st.expander("Butikker", expanded=False):
-        new_store = st.text_input("Ny butik", placeholder="Fx Meny", key="new_store")
-        if st.button("Tilføj butik", key="btn_add_store"):
+    # Add lists (minimal, no extra text)
+    c1, c2, c3 = st.columns(3, vertical_alignment="center")
+    with c1:
+        new_store = st.text_input("Ny butik", key="new_store")
+        if st.button("Tilføj", key="add_store"):
             ns = (new_store or "").strip()
             if ns and ns not in S["stores"]:
                 S["stores"].append(ns)
                 persist()
-                st.success("Tilføjet ✅")
                 st.rerun()
-        st.caption(" • " + " • ".join(S["stores"]))
 
-    with st.expander("Kategorier", expanded=False):
-        new_cat = st.text_input("Ny kategori", placeholder="Fx Snacks", key="new_cat")
-        if st.button("Tilføj kategori", key="btn_add_cat"):
+    with c2:
+        new_cat = st.text_input("Ny kategori", key="new_cat")
+        if st.button("Tilføj", key="add_cat"):
             nc = (new_cat or "").strip()
             if nc and nc not in S["categories"]:
                 S["categories"].append(nc)
                 persist()
-                st.success("Tilføjet ✅")
                 st.rerun()
-        st.caption(" • " + " • ".join(S["categories"]))
 
-    with st.expander("Steder i hjemmet", expanded=False):
-        new_loc = st.text_input("Nyt sted", placeholder="Fx Skur", key="new_loc")
-        if st.button("Tilføj sted", key="btn_add_loc"):
+    with c3:
+        new_loc = st.text_input("Nyt sted", key="new_loc")
+        if st.button("Tilføj", key="add_loc"):
             nl = (new_loc or "").strip()
             if nl and nl not in S["home_locations"]:
                 S["home_locations"].append(nl)
                 persist()
-                st.success("Tilføjet ✅")
                 st.rerun()
-        st.caption(" • " + " • ".join(S["home_locations"]))
-
-    st.caption(f"Sidst gemt: {S['meta'].get('last_saved') or '—'}")
