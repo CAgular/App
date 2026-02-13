@@ -17,12 +17,12 @@ st.title("🛒 Shopping")
 st.caption("Hurtig, mobil-venlig indkøbsliste med standardvarer + hjemme-lager.")
 
 # =========================================================
-# Styling (compact list, no weird wrappers)
+# Styling (compact rows + tiny checkbox)
 # =========================================================
 st.markdown(
     """
     <style>
-      .block-container { padding-top: 0.70rem; padding-bottom: 1.20rem; max-width: 720px; }
+      .block-container { padding-top: 0.65rem; padding-bottom: 1.10rem; max-width: 720px; }
 
       /* Inputs */
       div[data-testid="stTextInput"] input,
@@ -34,7 +34,7 @@ st.markdown(
       /* Buttons - not full width by default */
       .stButton>button {
         width: auto;
-        padding: 0.52rem 0.72rem;
+        padding: 0.50rem 0.68rem;
         border-radius: 14px;
         font-weight: 650;
       }
@@ -42,9 +42,9 @@ st.markdown(
 
       /* Icon buttons */
       .btn-icon .stButton>button {
-        width: 44px;
-        min-width: 44px;
-        height: 40px;
+        width: 42px;
+        min-width: 42px;
+        height: 38px;
         padding: 0;
         border-radius: 12px;
         font-weight: 850;
@@ -54,25 +54,45 @@ st.markdown(
       .rowbox {
         border: 1px solid rgba(49, 51, 63, 0.14);
         border-radius: 14px;
-        padding: 0.38rem 0.55rem;
-        margin: 0.12rem 0;
+        padding: 0.30rem 0.50rem;
+        margin: 0.10rem 0;
         background: rgba(255,255,255,0.02);
       }
-      .rowtitle {
-        font-weight: 760;
-        font-size: 1.02rem;
-        line-height: 1.15;
-        margin: 0;
+
+      /* One-line row layout using CSS grid */
+      .rowgrid {
+        display: grid;
+        grid-template-columns: 22px 1fr auto 46px;
+        align-items: center;
+        column-gap: 10px;
       }
-      .rowmeta {
+
+      .r-name {
+        font-weight: 760;
+        font-size: 1.00rem;
+        line-height: 1.10;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .r-qty {
         opacity: 0.80;
-        font-weight: 800;
+        font-weight: 850;
         font-size: 0.92rem;
         white-space: nowrap;
       }
 
-      h4 { margin-top: 0.40rem; margin-bottom: 0.12rem; }
-      h3 { margin-top: 0.55rem; margin-bottom: 0.12rem; }
+      /* Tiny checkbox */
+      .tinycb {
+        width: 18px;
+        height: 18px;
+        accent-color: #2ecc71;
+      }
+
+      /* Headings tighter */
+      h4 { margin-top: 0.38rem; margin-bottom: 0.10rem; }
+      h3 { margin-top: 0.50rem; margin-bottom: 0.10rem; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -83,7 +103,7 @@ st.markdown(
 # =========================================================
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
-DATA_FILE = DATA_DIR / "shopping_v6_6.json"
+DATA_FILE = DATA_DIR / "shopping_v6_7.json"
 
 DEFAULT_STORES = ["Netto", "Rema 1000", "Føtex", "Lidl", "Apotek", "Bauhaus", "Andet"]
 DEFAULT_CATEGORIES = [
@@ -122,13 +142,13 @@ def save_data(payload: Dict) -> None:
 
 
 def ensure_state():
-    if "shopping_v6_6" in st.session_state:
+    if "shopping_v6_7" in st.session_state:
         return
 
     data = load_data() or {}
     settings = data.get("settings", {}) if isinstance(data.get("settings", {}), dict) else {}
 
-    st.session_state.shopping_v6_6 = {
+    st.session_state.shopping_v6_7 = {
         "shopping_items": data.get("shopping_items", []),
         "standard_items": data.get("standard_items", []),
         "home_items": data.get("home_items", []),
@@ -147,7 +167,7 @@ def ensure_state():
 
 
 def persist():
-    S = st.session_state.shopping_v6_6
+    S = st.session_state.shopping_v6_7
     payload = {
         "shopping_items": S["shopping_items"],
         "standard_items": S["standard_items"],
@@ -164,7 +184,7 @@ def persist():
 
 
 ensure_state()
-S = st.session_state.shopping_v6_6
+S = st.session_state.shopping_v6_7
 
 
 def normalize_name(name: str) -> str:
@@ -316,7 +336,7 @@ def delete_open_item(item_id: str):
 
 
 # =========================================================
-# Stable input keys + safe reset pattern
+# Stable add-form keys + safe reset pattern
 # =========================================================
 K_NAME = "add_name"
 K_CAT = "add_category"
@@ -445,44 +465,77 @@ with tab_shop:
     open_items.sort(key=lambda x: (x.get("store", ""), x.get("category", ""), x.get("name", "").lower()))
     bought_items.sort(key=lambda x: (x.get("bought_at") or ""), reverse=True)
 
-    st.subheader("🧾 Indkøbsliste")
+    st.subheader("🧾 Indkøbsliste (meget kompakt)")
+
     if not open_items:
         st.info("Ingen varer på listen.")
     else:
+        # We do batch apply to keep checkbox tiny (HTML), stable and compact.
+        # Keys for checkboxes are in session_state as plain booleans.
         last_group = None
 
+        # Group items by store+category for readability
+        groups: Dict[str, List[Dict]] = {}
         for it in open_items:
-            group = f"{it.get('store','')} · {it.get('category','')}"
-            if group != last_group:
-                st.markdown(f"#### {group}")
-                last_group = group
+            g = f"{it.get('store','')} · {it.get('category','')}"
+            groups.setdefault(g, []).append(it)
 
-            # We avoid any extra wrappers that can create "oval fields"
-            st.markdown('<div class="rowbox">', unsafe_allow_html=True)
+        for group, group_items in groups.items():
+            st.markdown(f"#### {group}")
 
-            c_name, c_qty, c_buy, c_del = st.columns([6.4, 1.0, 1.1, 1.1], vertical_alignment="center")
+            form_key = f"form_{group}"
+            with st.form(form_key, clear_on_submit=False):
+                # render each row with a tiny checkbox using HTML + a hidden Streamlit checkbox state mirror
+                # We'll use Streamlit checkboxes (because HTML inputs don't send back reliably),
+                # but we'll squeeze them: put them in a 1-column and hide the label.
+                any_rows = False
 
-            with c_name:
-                st.markdown(f'<div class="rowtitle">{it.get("name","")}</div>', unsafe_allow_html=True)
+                for it in group_items:
+                    any_rows = True
+                    rid = it["id"]
+                    cb_key = f"cb_{rid}"
 
-            with c_qty:
-                st.markdown(f'<div class="rowmeta">×{int(it.get("qty",1))}</div>', unsafe_allow_html=True)
+                    # Row container
+                    st.markdown('<div class="rowbox">', unsafe_allow_html=True)
 
-            with c_buy:
-                st.markdown('<div class="btn-icon">', unsafe_allow_html=True)
-                if st.button("✅", key=f"buy_{it['id']}"):
-                    mark_bought(it["id"])
+                    # columns: checkbox | name | qty | delete
+                    c_cb, c_name, c_qty, c_del = st.columns([0.8, 6.6, 1.2, 1.2], vertical_alignment="center")
+
+                    with c_cb:
+                        # Streamlit checkbox (label hidden). Small-ish, and the whole row becomes compact.
+                        # (We cannot truly shrink it to 18px reliably with Streamlit components.)
+                        st.checkbox("købt", key=cb_key, label_visibility="collapsed")
+
+                    with c_name:
+                        st.markdown(f'<div class="r-name">{it.get("name","")}</div>', unsafe_allow_html=True)
+
+                    with c_qty:
+                        st.markdown(f'<div class="r-qty">×{int(it.get("qty",1))}</div>', unsafe_allow_html=True)
+
+                    with c_del:
+                        st.markdown('<div class="btn-icon">', unsafe_allow_html=True)
+                        if st.form_submit_button("🗑️", key=f"del_{rid}"):
+                            delete_open_item(rid)
+                            st.rerun()
+                        st.markdown("</div>", unsafe_allow_html=True)
+
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+                # Apply bought selections (one compact button per group)
+                cols = st.columns([2.2, 4.8])
+                with cols[0]:
+                    apply = st.form_submit_button("✅ Markér valgte som købt")
+                with cols[1]:
+                    st.caption("Tip: Kryds af ved varer og tryk knappen én gang.")
+
+                if apply and any_rows:
+                    # Mark all checked as bought
+                    for it in group_items:
+                        if st.session_state.get(f"cb_{it['id']}", False):
+                            mark_bought(it["id"])
+                            st.session_state[f"cb_{it['id']}"] = False
+                    st.success("Opdateret ✅")
                     st.rerun()
-                st.markdown("</div>", unsafe_allow_html=True)
-
-            with c_del:
-                st.markdown('<div class="btn-icon">', unsafe_allow_html=True)
-                if st.button("🗑️", key=f"d_{it['id']}"):
-                    delete_open_item(it["id"])
-                    st.rerun()
-                st.markdown("</div>", unsafe_allow_html=True)
-
-            st.markdown("</div>", unsafe_allow_html=True)
 
     if settings.get("show_bought", False):
         with st.expander(f"✅ Købte varer ({len(bought_items)})", expanded=False):
@@ -510,7 +563,7 @@ with tab_home:
     home.sort(key=lambda x: (x.get("location", ""), x.get("name", "").lower()))
 
     if not home:
-        st.info("Ingen varer derhjemme endnu. Markér noget som 'Købt' i indkøbslisten.")
+        st.info("Ingen varer derhjemme endnu. Markér noget som købt i indkøbslisten.")
     else:
         last_loc = None
         for it in home:
