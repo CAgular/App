@@ -72,9 +72,9 @@ def ensure_state():
     if "new_item_text" not in state:
         state["new_item_text"] = ""
 
-    # Stepper value
-    if "new_item_qty" not in state:
-        state["new_item_qty"] = 1.0
+    # antal som tekst (for iPhone)
+    if "new_item_qty_text" not in state:
+        state["new_item_qty_text"] = "1"
 
     if "new_item_cat" not in state:
         state["new_item_cat"] = "Ukategoriseret"
@@ -97,16 +97,21 @@ ensure_state()
 
 
 # ---------- Actions ----------
-def qty_minus():
-    q = float(state.get("new_item_qty", 1.0))
-    q = max(1.0, q - 1.0)
-    state["new_item_qty"] = q
-
-
-def qty_plus():
-    q = float(state.get("new_item_qty", 1.0))
-    q = q + 1.0
-    state["new_item_qty"] = q
+def _parse_qty(s: str) -> float:
+    """
+    Tillad: 1, 2, 0.5, 1.5, 1,5
+    Tom/ugyldigt -> 1
+    <=0 -> 1
+    """
+    s = (s or "").strip()
+    if not s:
+        return 1.0
+    s = s.replace(",", ".")
+    try:
+        q = float(s)
+    except Exception:
+        return 1.0
+    return 1.0 if q <= 0 else q
 
 
 def add_item():
@@ -114,15 +119,12 @@ def add_item():
     if not txt:
         return
 
-    q = float(state.get("new_item_qty", 1.0))
-    if q <= 0:
-        q = 1.0
-
+    q = _parse_qty(state.get("new_item_qty_text"))
     cat = (state.get("new_item_cat") or "Ukategoriseret").strip() or "Ukategoriseret"
 
     state["shopping_items"].append(ShoppingItem(text=txt, qty=q, category=cat))
     state["new_item_text"] = ""
-    state["new_item_qty"] = 1.0
+    state["new_item_qty_text"] = "1"
     save_items(state["shopping_items"])
 
 
@@ -141,7 +143,6 @@ with st.container(horizontal_alignment="center"):
     st.title("🛒 Indkøbsliste", width="content", anchor=False)
 
 with st.form(key="new_item_form", border=False):
-    # Input-række: Vare + stepper + kategori + Tilføj
     with st.container(horizontal=True, vertical_alignment="bottom"):
         st.text_input(
             "Ny vare",
@@ -150,22 +151,13 @@ with st.form(key="new_item_form", border=False):
             key="new_item_text",
         )
 
-        # Kompakt stepper (−  antal  +)
-        step = st.container()
-        with step:
-            c1, c2, c3 = st.columns([0.28, 0.44, 0.28], gap="small")
-            with c1:
-                st.form_submit_button("−", on_click=qty_minus)
-            with c2:
-                # Vis kun tallet (ingen inputfelt)
-                q = float(state.get("new_item_qty", 1.0))
-                q_txt = str(int(q)) if q.is_integer() else str(q)
-                st.markdown(
-                    f"<div style='text-align:center; padding:0.35rem 0; font-weight:600;'>{q_txt}</div>",
-                    unsafe_allow_html=True,
-                )
-            with c3:
-                st.form_submit_button("+", on_click=qty_plus)
+        # lille tekstfelt til antal
+        st.text_input(
+            "Antal",
+            label_visibility="collapsed",
+            placeholder="Antal",
+            key="new_item_qty_text",
+        )
 
         st.selectbox(
             "Kategori",
@@ -196,8 +188,6 @@ else:
             cat_items = [it for it in items if (it.category or "Ukategoriseret") == cat]
             if not cat_items:
                 continue
-
-            # Ingen synlig kategori (bevidst)
 
             for it in cat_items:
                 with st.container(horizontal=True, vertical_alignment="center"):
