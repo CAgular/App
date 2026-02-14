@@ -9,7 +9,7 @@ state = st.session_state
 
 
 @dataclass
-class Item:
+class ShoppingItem:
     text: str
     bought: bool = False
     uid: uuid.UUID = field(default_factory=uuid.uuid4)
@@ -17,25 +17,27 @@ class Item:
 
 # ----- Init / repair state -----
 def ensure_state():
-    # Hvis noget andet i app'en har skrevet state.items til noget mærkeligt,
-    # så genskab som en ren liste.
-    if "items" not in state or state.items is None:
-        state.items = []
+    if "shopping_items" not in state or state["shopping_items"] is None:
+        state["shopping_items"] = []
 
-    # Hvis det ikke er en liste, så prøv at konvertere – ellers reset.
-    if not isinstance(state.items, list):
+    # Sørg for ren liste
+    if not isinstance(state["shopping_items"], list):
         try:
-            state.items = list(state.items)
+            state["shopping_items"] = list(state["shopping_items"])
         except Exception:
-            state.items = []
+            state["shopping_items"] = []
 
-    # Backfill demo-items hvis listen er helt tom første gang
-    if len(state.items) == 0 and "items_seeded" not in state:
-        state.items = [Item(text="Mælk"), Item(text="Æg"), Item(text="Kaffe")]
-        state.items_seeded = True
+    # Seed kun første gang
+    if len(state["shopping_items"]) == 0 and "shopping_seeded" not in state:
+        state["shopping_items"] = [
+            ShoppingItem(text="Mælk"),
+            ShoppingItem(text="Æg"),
+            ShoppingItem(text="Kaffe"),
+        ]
+        state["shopping_seeded"] = True
 
     if "new_item_text" not in state:
-        state.new_item_text = ""
+        state["new_item_text"] = ""
 
 
 ensure_state()
@@ -43,23 +45,24 @@ ensure_state()
 
 # ----- Actions -----
 def add_item():
-    txt = (state.new_item_text or "").strip()
+    txt = (state.get("new_item_text") or "").strip()
     if not txt:
         return
-    state.items.append(Item(text=txt))
-    state.new_item_text = ""
+    state["shopping_items"].append(ShoppingItem(text=txt))
+    state["new_item_text"] = ""
 
 
 def toggle_bought(uid_str: str):
-    # Toggle via uid (robust mod reordering)
-    for it in state.items:
+    for it in state["shopping_items"]:
         if str(it.uid) == uid_str:
             it.bought = not it.bought
             break
 
 
 def remove_item(uid_str: str):
-    state.items = [it for it in state.items if str(it.uid) != uid_str]
+    state["shopping_items"] = [
+        it for it in state["shopping_items"] if str(it.uid) != uid_str
+    ]
 
 
 # ----- UI -----
@@ -80,10 +83,12 @@ with st.form(key="new_item_form", border=False):
             on_click=add_item,
         )
 
-if state.items:
+items = state["shopping_items"]
+
+if items:
     with st.container(gap=None, border=True):
-        # Vis ikke-købte først (uden sort/enumerate)
-        for it in [x for x in state.items if not x.bought]:
+        # Ikke-købte først (kompakt, ingen sort/enumerate)
+        for it in [x for x in items if not x.bought]:
             with st.container(horizontal=True, vertical_alignment="center"):
                 st.markdown(it.text)
                 st.button(
@@ -101,7 +106,7 @@ if state.items:
                     key=f"remove_{it.uid}",
                 )
 
-        for it in [x for x in state.items if x.bought]:
+        for it in [x for x in items if x.bought]:
             with st.container(horizontal=True, vertical_alignment="center"):
                 st.markdown(f"~~{it.text}~~")
                 st.button(
@@ -109,7 +114,7 @@ if state.items:
                     type="tertiary",
                     on_click=toggle_bought,
                     args=[str(it.uid)],
-                    key=f"unbought_{it.uid}",
+                    key=f"undo_{it.uid}",
                 )
                 st.button(
                     ":material/delete:",
