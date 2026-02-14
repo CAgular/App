@@ -4,13 +4,13 @@ from dataclasses import dataclass, field
 import uuid
 
 st.set_page_config(page_title="Indkøbsliste", page_icon="🛒")
-
 state = st.session_state
 
 
 @dataclass
 class ShoppingItem:
     text: str
+    category: str = ""   # tom = "Ukategoriseret"
     bought: bool = False
     uid: uuid.UUID = field(default_factory=uuid.uuid4)
 
@@ -20,24 +20,31 @@ def ensure_state():
     if "shopping_items" not in state or state["shopping_items"] is None:
         state["shopping_items"] = []
 
-    # Sørg for ren liste
     if not isinstance(state["shopping_items"], list):
         try:
             state["shopping_items"] = list(state["shopping_items"])
         except Exception:
             state["shopping_items"] = []
 
-    # Seed kun første gang
-    if len(state["shopping_items"]) == 0 and "shopping_seeded" not in state:
-        state["shopping_items"] = [
-            ShoppingItem(text="Mælk"),
-            ShoppingItem(text="Æg"),
-            ShoppingItem(text="Kaffe"),
-        ]
-        state["shopping_seeded"] = True
-
     if "new_item_text" not in state:
         state["new_item_text"] = ""
+
+    if "new_item_cat" not in state:
+        state["new_item_cat"] = "Ukategoriseret"
+
+    # Kendte kategorier (bruges til dropdown + sortering)
+    if "shopping_categories" not in state:
+        state["shopping_categories"] = [
+            "Frugt & grønt",
+            "Kød & fisk",
+            "Mejeri",
+            "Brød",
+            "Kolonial",
+            "Frost",
+            "Drikkevarer",
+            "Diverse",
+            "Ukategoriseret",
+        ]
 
 
 ensure_state()
@@ -48,7 +55,12 @@ def add_item():
     txt = (state.get("new_item_text") or "").strip()
     if not txt:
         return
-    state["shopping_items"].append(ShoppingItem(text=txt))
+
+    cat = (state.get("new_item_cat") or "").strip()
+    if not cat:
+        cat = "Ukategoriseret"
+
+    state["shopping_items"].append(ShoppingItem(text=txt, category=cat))
     state["new_item_text"] = ""
 
 
@@ -77,6 +89,12 @@ with st.form(key="new_item_form", border=False):
             placeholder="Tilføj vare…",
             key="new_item_text",
         )
+        st.selectbox(
+            "Kategori",
+            options=state["shopping_categories"],
+            key="new_item_cat",
+            label_visibility="collapsed",
+        )
         st.form_submit_button(
             "Tilføj",
             icon=":material/add:",
@@ -85,43 +103,58 @@ with st.form(key="new_item_form", border=False):
 
 items = state["shopping_items"]
 
-if items:
-    with st.container(gap=None, border=True):
-        # Ikke-købte først (kompakt, ingen sort/enumerate)
-        for it in [x for x in items if not x.bought]:
-            with st.container(horizontal=True, vertical_alignment="center"):
-                st.markdown(it.text)
-                st.button(
-                    "Købt",
-                    type="secondary",
-                    on_click=toggle_bought,
-                    args=[str(it.uid)],
-                    key=f"bought_{it.uid}",
-                )
-                st.button(
-                    ":material/delete:",
-                    type="tertiary",
-                    on_click=remove_item,
-                    args=[str(it.uid)],
-                    key=f"remove_{it.uid}",
-                )
-
-        for it in [x for x in items if x.bought]:
-            with st.container(horizontal=True, vertical_alignment="center"):
-                st.markdown(f"~~{it.text}~~")
-                st.button(
-                    "Fortryd",
-                    type="tertiary",
-                    on_click=toggle_bought,
-                    args=[str(it.uid)],
-                    key=f"undo_{it.uid}",
-                )
-                st.button(
-                    ":material/delete:",
-                    type="tertiary",
-                    on_click=remove_item,
-                    args=[str(it.uid)],
-                    key=f"remove2_{it.uid}",
-                )
-else:
+if not items:
     st.info("Listen er tom.")
+else:
+    # Gruppér efter kategori, uden at vise kategori på varen
+    # Sortering: kategori alfabetisk, men "Ukategoriseret" altid sidst
+    def cat_key(cat: str):
+        return ("zzzz" if cat == "Ukategoriseret" else cat.lower())
+
+    categories = sorted({(it.category or "Ukategoriseret") for it in items}, key=cat_key)
+
+    with st.container(gap=None, border=True):
+        for cat in categories:
+            cat_items = [it for it in items if (it.category or "Ukategoriseret") == cat]
+            if not cat_items:
+                continue
+
+            # Lille gruppe-overskrift (kun her ses kategorien)
+            st.caption(cat)
+
+            # Ikke-købte først, derefter købte
+            for it in [x for x in cat_items if not x.bought]:
+                with st.container(horizontal=True, vertical_alignment="center"):
+                    st.markdown(it.text)
+                    st.button(
+                        "Købt",
+                        type="secondary",
+                        on_click=toggle_bought,
+                        args=[str(it.uid)],
+                        key=f"b_{it.uid}",
+                    )
+                    st.button(
+                        ":material/delete:",
+                        type="tertiary",
+                        on_click=remove_item,
+                        args=[str(it.uid)],
+                        key=f"r_{it.uid}",
+                    )
+
+            for it in [x for x in cat_items if x.bought]:
+                with st.container(horizontal=True, vertical_alignment="center"):
+                    st.markdown(f"~~{it.text}~~")
+                    st.button(
+                        "Fortryd",
+                        type="tertiary",
+                        on_click=toggle_bought,
+                        args=[str(it.uid)],
+                        key=f"u_{it.uid}",
+                    )
+                    st.button(
+                        ":material/delete:",
+                        type="tertiary",
+                        on_click=remove_item,
+                        args=[str(it.uid)],
+                        key=f"r2_{it.uid}",
+                    )
