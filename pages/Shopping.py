@@ -1,49 +1,57 @@
 # -*- coding: utf-8 -*-
-import json
-import os
-import uuid
-from dataclasses import dataclass, asdict, field
-
 import streamlit as st
 
-st.set_page_config(page_title="Indkøb", page_icon="🛒")
-state = st.session_state
+from src.app_state import init_app_state
+from src.config import APP_TITLE, DB_PATH, DB_DRIVE_NAME
+from src.storage_shopping import (
+    init_shopping_tables,
+    fetch_shopping,
+    fetch_pantry,
+    add_shopping,
+    delete_shopping,
+    pop_shopping,
+    pantry_add_or_merge,
+    pantry_set_location,
+    pantry_used_add_back,
+)
+from drive_sync import upload_or_update, FOLDER_ID
 
-DATA_DIR = "data"
-DATA_FILE = os.path.join(DATA_DIR, "shopping_data.json")
+st.set_page_config(page_title=f"{APP_TITLE} • Shopping", page_icon="🛒", layout="centered")
+st.link_button("⬅️ Tilbage til forside", "/")
 
+# -----------------------------
+# Init (Drive + DB)
+# -----------------------------
+state = init_app_state()
+drive = state["drive"]
+drive_error = state["drive_error"]
+downloaded_db = state["downloaded_db"]
 
-# ----------------- Models -----------------
-@dataclass
-class ShoppingItem:
-    text: str
-    qty: float = 1.0
-    category: str = "Ukategoriseret"  # (din tidligere "indkøbskategori")
-    uid: str = field(default_factory=lambda: str(uuid.uuid4()))
+init_shopping_tables()
 
+st.title("🛒 Shopping")
 
-@dataclass
-class PantryItem:
-    text: str
-    qty: float = 1.0
-    location: str = "Ukategoriseret"  # køleskab/fryser/bryggers/...
-    uid: str = field(default_factory=lambda: str(uuid.uuid4()))
+with st.expander("Drive sync status", expanded=False):
+    if drive is None:
+        st.warning(f"Drive sync disabled (could not connect): {drive_error}")
+    else:
+        st.success("Drive connected ✅")
+        st.info(
+            "Downloaded latest database from Drive ✅"
+            if downloaded_db
+            else "No database found in Drive (or first run). Using local DB."
+        )
 
-
-# ----------------- Helpers -----------------
-def _ensure_storage_dir():
-    os.makedirs(DATA_DIR, exist_ok=True)
-
+def sync_db():
+    if drive is None:
+        return
+    try:
+        upload_or_update(drive, FOLDER_ID, DB_PATH, DB_DRIVE_NAME)
+    except Exception as e:
+        st.warning(f"Saved locally, but failed to sync DB to Drive: {e}")
 
 def _parse_qty(s) -> float:
-    """
-    Tillad: 1, 2, 0.5, 1.5, 1,5
-    Tom/ugyldigt -> 1
-    <=0 -> 1
-    """
-    if s is None:
-        return 1.0
-    s = str(s).strip()
+    s = (s or "").strip()
     if not s:
         return 1.0
     s = s.replace(",", ".")
@@ -53,274 +61,56 @@ def _parse_qty(s) -> float:
         return 1.0
     return 1.0 if q <= 0 else q
 
-
 def _fmt_qty(q: float) -> str:
     q = float(q)
     return str(int(q)) if q.is_integer() else str(q)
 
+# -----------------------------
+# UI state defaults
+# -----------------------------
+ss = st.session_state
+ss.setdefault("new_item_text", "")
+ss.setdefault("new_item_qty_text", "1")
+ss.setdefault("new_item_cat", "Ukategoriseret")
 
-def load_data():
-    _ensure_storage_dir()
-    if not os.path.exists(DATA_FILE):
-        return {"shopping": [], "pantry": [], "pantry_location_memory": {}}
+ss.setdefault("shopping_categories", [
+    "Frugt & grønt",
+    "Kød & fisk",
+    "Mejeri",
+    "Brød",
+    "Kolonial",
+    "Frost",
+    "Drikkevarer",
+    "Diverse",
+    "Ukategoriseret",
+])
 
-    try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            raw = json.load(f) or {}
-    except Exception:
-        return {"shopping": [], "pantry": [], "pantry_location_memory": {}}
+ss.setdefault("pantry_locations", [
+    "Køleskab",
+    "Fryser",
+    "Bryggers",
+    "Skab",
+    "Badeværelse",
+    "Kælder",
+    "Garage",
+    "Ukategoriseret",
+])
 
-    # robust defaults
-    raw.setdefault("shopping", [])
-    raw.setdefault("pantry", [])
-    raw.setdefault("pantry_location_memory", {})
+# Prompt for "Brugt"
+ss.setdefault("pantry_prompt_uid", None)
+ss.setdefault("pantry_prompt_qty_text", "1")
 
-    # normalize arrays
-    if not isinstance(raw["shopping"], list):
-        raw["shopping"] = []
-    if not isinstance(raw["pantry"], list):
-        raw["pantry"] = []
-    if not isinstance(raw["pantry_location_memory"], dict):
-        raw["pantry_location_memory"] = {}
-
-    return raw
-
-
-def save_data():
-    _ensure_storage_dir()
-    out = {
-        "shopping": [asdict(x) for x in state["shopping_items"]],
-        "pantry": [asdict(x) for x in state["pantry_items"]],
-        "pantry_location_memory": state["pantry_location_memory"],
-    }
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(out, f, ensure_ascii=False, indent=2)
-
-
-def ensure_state():
-    if "data_loaded" in state:
-        return
-
-    raw = load_data()
-
-    # migrate shopping
-    shopping_items = []
-    for x in raw["shopping"]:
-        if not isinstance(x, dict):
-            continue
-        txt = (x.get("text") or x.get("name") or "").strip()
-        if not txt:
-            continue
-        shopping_items.append(
-            ShoppingItem(
-                text=txt,
-                qty=_parse_qty(x.get("qty", 1)),
-                category=(x.get("category") or "Ukategoriseret").strip() or "Ukategoriseret",
-                uid=str(x.get("uid") or str(uuid.uuid4())),
-            )
-        )
-
-    # migrate pantry
-    pantry_items = []
-    for x in raw["pantry"]:
-        if not isinstance(x, dict):
-            continue
-        txt = (x.get("text") or x.get("name") or "").strip()
-        if not txt:
-            continue
-        pantry_items.append(
-            PantryItem(
-                text=txt,
-                qty=_parse_qty(x.get("qty", 1)),
-                location=(x.get("location") or "Ukategoriseret").strip() or "Ukategoriseret",
-                uid=str(x.get("uid") or str(uuid.uuid4())),
-            )
-        )
-
-    state["shopping_items"] = shopping_items
-    state["pantry_items"] = pantry_items
-    state["pantry_location_memory"] = raw.get("pantry_location_memory", {}) or {}
-
-    # inputs
-    state.setdefault("new_item_text", "")
-    state.setdefault("new_item_qty_text", "1")
-    state.setdefault("new_item_cat", "Ukategoriseret")
-
-    # pantry prompt state
-    state.setdefault("pantry_prompt_uid", None)
-    state.setdefault("pantry_prompt_qty_text", "1")
-
-    # dropdowns
-    state.setdefault(
-        "shopping_categories",
-        [
-            "Frugt & grønt",
-            "Kød & fisk",
-            "Mejeri",
-            "Brød",
-            "Kolonial",
-            "Frost",
-            "Drikkevarer",
-            "Diverse",
-            "Ukategoriseret",
-        ],
-    )
-    state.setdefault(
-        "pantry_locations",
-        [
-            "Køleskab",
-            "Fryser",
-            "Bryggers",
-            "Skab",
-            "Badeværelse",
-            "Kælder",
-            "Garage",
-            "Ukategoriseret",
-        ],
-    )
-
-    state["data_loaded"] = True
-
-
-ensure_state()
-
-
-# ----------------- Core logic -----------------
-def add_to_shopping(text: str, qty: float, category: str):
-    text = (text or "").strip()
-    if not text:
-        return
-    if qty <= 0:
-        qty = 1.0
-    category = (category or "Ukategoriseret").strip() or "Ukategoriseret"
-
-    state["shopping_items"].append(ShoppingItem(text=text, qty=qty, category=category))
-    save_data()
-
-
-def add_to_pantry(text: str, qty: float):
-    """
-    When bought -> add to pantry.
-    Location is remembered per item name (first time user sets it).
-    If already exists in pantry with same text+location -> increase qty.
-    """
-    text = (text or "").strip()
-    if not text:
-        return
-    if qty <= 0:
-        qty = 1.0
-
-    mem = state["pantry_location_memory"]
-    location = (mem.get(text.lower()) or "Ukategoriseret").strip() or "Ukategoriseret"
-
-    # merge if existing same item+location
-    for it in state["pantry_items"]:
-        if it.text.strip().lower() == text.lower() and it.location == location:
-            it.qty = float(it.qty) + float(qty)
-            save_data()
-            return
-
-    state["pantry_items"].append(PantryItem(text=text, qty=qty, location=location))
-    save_data()
-
-
-def shopping_add_item():
-    txt = (state.get("new_item_text") or "").strip()
-    if not txt:
-        return
-    qty = _parse_qty(state.get("new_item_qty_text"))
-    cat = (state.get("new_item_cat") or "Ukategoriseret").strip() or "Ukategoriseret"
-
-    add_to_shopping(txt, qty, cat)
-    state["new_item_text"] = ""
-    state["new_item_qty_text"] = "1"
-
-
-def shopping_mark_bought(uid: str):
-    # find item
-    item = None
-    for it in state["shopping_items"]:
-        if it.uid == uid:
-            item = it
-            break
-    if not item:
-        return
-
-    # remove from shopping
-    state["shopping_items"] = [x for x in state["shopping_items"] if x.uid != uid]
-
-    # add to pantry (auto)
-    add_to_pantry(item.text, float(item.qty))
-
-    save_data()
-
-
-def shopping_remove(uid: str):
-    state["shopping_items"] = [x for x in state["shopping_items"] if x.uid != uid]
-    save_data()
-
-
-def pantry_set_location(uid: str, new_loc: str):
-    new_loc = (new_loc or "Ukategoriseret").strip() or "Ukategoriseret"
-    for it in state["pantry_items"]:
-        if it.uid == uid:
-            it.location = new_loc
-            # remember per name
-            state["pantry_location_memory"][it.text.lower()] = new_loc
-            break
-    save_data()
-
-
-def pantry_used(uid: str):
-    # open prompt
-    state["pantry_prompt_uid"] = uid
-    state["pantry_prompt_qty_text"] = "1"
-
-
-def pantry_prompt_cancel():
-    state["pantry_prompt_uid"] = None
-
-
-def pantry_prompt_confirm_add_back():
-    uid = state.get("pantry_prompt_uid")
-    qty_used = _parse_qty(state.get("pantry_prompt_qty_text"))
-
-    # find pantry item
-    p = None
-    for it in state["pantry_items"]:
-        if it.uid == uid:
-            p = it
-            break
-    if not p:
-        state["pantry_prompt_uid"] = None
-        return
-
-    # Add back to shopping
-    add_to_shopping(p.text, qty_used, "Ukategoriseret")
-
-    # Decrease pantry qty / remove if empty
-    remaining = float(p.qty) - float(qty_used)
-    if remaining > 0:
-        p.qty = remaining
-    else:
-        state["pantry_items"] = [x for x in state["pantry_items"] if x.uid != uid]
-
-    save_data()
-    state["pantry_prompt_uid"] = None
-
-
-# ----------------- UI -----------------
-with st.container(horizontal_alignment="center"):
-    st.title("🛒 Indkøb", width="content", anchor=False)
 
 tab_shop, tab_pantry = st.tabs(["Indkøbsliste", "Hjemme"])
 
-# --------- TAB: Shopping ----------
+# -----------------------------
+# TAB: Indkøbsliste
+# -----------------------------
 with tab_shop:
-    with st.form(key="new_item_form", border=False):
+    with st.form("add_item_form", border=False):
         with st.container(horizontal=True, vertical_alignment="bottom"):
             st.text_input(
-                "Ny vare",
+                "Vare",
                 label_visibility="collapsed",
                 placeholder="Tilføj vare…",
                 key="new_item_text",
@@ -333,116 +123,129 @@ with tab_shop:
             )
             st.selectbox(
                 "Kategori",
-                options=state["shopping_categories"],
+                ss["shopping_categories"],
                 key="new_item_cat",
                 label_visibility="collapsed",
             )
-            st.form_submit_button(
-                "Tilføj",
-                icon=":material/add:",
-                on_click=shopping_add_item,
-            )
+            submitted = st.form_submit_button("Tilføj", icon=":material/add:")
 
-    shopping_items = state["shopping_items"]
+        if submitted:
+            text = (ss["new_item_text"] or "").strip()
+            if text:
+                qty = _parse_qty(ss["new_item_qty_text"])
+                cat = (ss["new_item_cat"] or "Ukategoriseret").strip() or "Ukategoriseret"
+                add_shopping(text=text, qty=qty, category=cat)
+                ss["new_item_text"] = ""
+                ss["new_item_qty_text"] = "1"
+                sync_db()
+                st.rerun()
 
-    if not shopping_items:
+    rows = fetch_shopping()
+    if not rows:
         st.info("Listen er tom.")
     else:
-        # sort by category, but don't show category on each line
-        def cat_key(cat: str):
-            return ("zzzz" if cat == "Ukategoriseret" else cat.lower())
+        # Sortér via kategorier, men vis ikke kategori på linjerne
+        def cat_key(c: str):
+            return ("zzzz" if c == "Ukategoriseret" else c.lower())
 
-        cats = sorted({(it.category or "Ukategoriseret") for it in shopping_items}, key=cat_key)
+        cats = sorted({(r[3] or "Ukategoriseret") for r in rows}, key=cat_key)
 
         with st.container(gap=None, border=True):
             for cat in cats:
-                group = [it for it in shopping_items if (it.category or "Ukategoriseret") == cat]
-                if not group:
-                    continue
-
-                # bevidst: ingen synlig kategori-overskrift
-
-                for it in group:
+                group = [r for r in rows if (r[3] or "Ukategoriseret") == cat]
+                for uid, text, qty, _cat in group:
                     with st.container(horizontal=True, vertical_alignment="center"):
-                        st.markdown(f"{_fmt_qty(it.qty)} × {it.text}")
-                        st.button(
-                            "Købt",
-                            type="secondary",
-                            on_click=shopping_mark_bought,
-                            args=[it.uid],
-                            key=f"shop_b_{it.uid}",
-                        )
-                        st.button(
-                            ":material/delete:",
-                            type="tertiary",
-                            on_click=shopping_remove,
-                            args=[it.uid],
-                            key=f"shop_r_{it.uid}",
-                        )
+                        st.markdown(f"{_fmt_qty(qty)} × {text}")
 
-# --------- TAB: Pantry ----------
+                        # Købt -> flyt til Hjemme (pantry)
+                        if st.button("Købt", key=f"shop_b_{uid}", type="secondary"):
+                            popped = pop_shopping(uid)
+                            if popped:
+                                t, q, _c = popped
+                                pantry_add_or_merge(t, q)
+                                sync_db()
+                            st.rerun()
+
+                        # Fjern
+                        if st.button(":material/delete:", key=f"shop_r_{uid}", type="tertiary"):
+                            delete_shopping(uid)
+                            sync_db()
+                            st.rerun()
+
+# -----------------------------
+# TAB: Hjemme
+# -----------------------------
 with tab_pantry:
-    pantry_items = state["pantry_items"]
-
-    # Prompt area (mini "dialog" uden at kræve ny Streamlit-version)
-    prompt_uid = state.get("pantry_prompt_uid")
+    # Prompt UI når man trykker "Brugt"
+    prompt_uid = ss.get("pantry_prompt_uid")
     if prompt_uid:
-        p = next((x for x in pantry_items if x.uid == prompt_uid), None)
-        if p:
-            with st.container(border=True):
-                st.markdown(f"**Tilføj `{p.text}` til indkøbslisten igen?**")
-                c1, c2, c3 = st.columns([0.5, 0.25, 0.25], gap="small")
-                with c1:
-                    st.text_input(
-                        "Antal",
-                        label_visibility="collapsed",
-                        placeholder="Antal",
-                        key="pantry_prompt_qty_text",
-                    )
-                with c2:
-                    st.button("Ja", type="primary", on_click=pantry_prompt_confirm_add_back)
-                with c3:
-                    st.button("Nej", type="tertiary", on_click=pantry_prompt_cancel)
+        with st.container(border=True):
+            st.markdown("**Tilføj til indkøbslisten igen?**")
+            c1, c2, c3 = st.columns([0.5, 0.25, 0.25], gap="small")
+            with c1:
+                st.text_input(
+                    "Antal",
+                    label_visibility="collapsed",
+                    placeholder="Antal",
+                    key="pantry_prompt_qty_text",
+                )
+            with c2:
+                if st.button("Ja", type="primary", key="pantry_yes"):
+                    qty_used = _parse_qty(ss["pantry_prompt_qty_text"])
+                    text = pantry_used_add_back(prompt_uid, qty_used)
+                    if text:
+                        # kategori er ikke nødvendig her; du ønskede primært placering i pantry
+                        add_shopping(text=text, qty=qty_used, category="Ukategoriseret")
+                        sync_db()
+                    ss["pantry_prompt_uid"] = None
+                    ss["pantry_prompt_qty_text"] = "1"
+                    st.rerun()
+            with c3:
+                if st.button("Nej", type="tertiary", key="pantry_no"):
+                    ss["pantry_prompt_uid"] = None
+                    ss["pantry_prompt_qty_text"] = "1"
+                    st.rerun()
 
-    if not pantry_items:
+    pantry_rows = fetch_pantry()
+    if not pantry_rows:
         st.info("Ingen varer registreret derhjemme endnu.")
     else:
-        # sort by location, but keep UI minimal
-        def loc_key(loc: str):
-            return ("zzzz" if loc == "Ukategoriseret" else loc.lower())
+        # Gruppér efter placering (her giver det mening at vise)
+        def loc_key(x: str):
+            return ("zzzz" if x == "Ukategoriseret" else x.lower())
 
-        locs = sorted({(it.location or "Ukategoriseret") for it in pantry_items}, key=loc_key)
+        locs = sorted({(r[3] or "Ukategoriseret") for r in pantry_rows}, key=loc_key)
 
         with st.container(gap=None, border=True):
             for loc in locs:
-                group = [it for it in pantry_items if (it.location or "Ukategoriseret") == loc]
+                group = [r for r in pantry_rows if (r[3] or "Ukategoriseret") == loc]
                 if not group:
                     continue
 
-                # du kan vælge at skjule overskriften helt; men her giver den mening i "Hjemme"
                 st.caption(loc)
 
-                for it in group:
+                for uid, text, qty, location in group:
                     with st.container(horizontal=True, vertical_alignment="center"):
-                        st.markdown(f"{_fmt_qty(it.qty)} × {it.text}")
+                        st.markdown(f"{_fmt_qty(qty)} × {text}")
 
-                        # placering vælges (og huskes pr varenavn)
-                        st.selectbox(
+                        # Placering select (huskes pr varenavn via DB)
+                        sel_key = f"loc_{uid}"
+                        if sel_key not in ss:
+                            ss[sel_key] = location if location in ss["pantry_locations"] else "Ukategoriseret"
+
+                        new_loc = st.selectbox(
                             "Placering",
-                            options=state["pantry_locations"],
-                            index=state["pantry_locations"].index(it.location)
-                            if it.location in state["pantry_locations"]
-                            else state["pantry_locations"].index("Ukategoriseret"),
+                            options=ss["pantry_locations"],
+                            key=sel_key,
                             label_visibility="collapsed",
-                            key=f"loc_{it.uid}",
-                            on_change=pantry_set_location,
-                            args=[it.uid, state.get(f"loc_{it.uid}")],
                         )
+                        if new_loc != location:
+                            pantry_set_location(uid=uid, text=text, location=new_loc)
+                            sync_db()
+                            st.rerun()
 
-                        st.button(
-                            "Brugt",
-                            type="secondary",
-                            on_click=pantry_used,
-                            args=[it.uid],
-                            key=f"used_{it.uid}",
-                        )
+                        # Brugt -> prompt
+                        if st.button("Brugt", key=f"used_{uid}", type="secondary"):
+                            ss["pantry_prompt_uid"] = uid
+                            ss["pantry_prompt_qty_text"] = "1"
+                            st.rerun()
