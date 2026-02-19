@@ -13,24 +13,26 @@ def _conn():
 
 def _table_cols(con: sqlite3.Connection, table: str) -> set[str]:
     rows = con.execute(f"PRAGMA table_info({table})").fetchall()
-    # row[1] is column name
-    return {r[1] for r in rows}
+    return {r[1] for r in rows}  # column name
 
 
 def init_shopping_tables() -> None:
     """
-    Create tables + simple migrations.
+    Create tables + run safe migrations.
 
-    We store categories on both lists:
-      - shopping_items.category
-      - pantry_items.category
+    We want:
+      shopping_items: uid, text, qty, category, created_at
+      pantry_items:   uid, text, qty, category, created_at
 
-    Migration note:
-      If an older pantry_items had 'location' column, we add 'category' and copy location->category.
+    Old DB variants:
+      pantry_items may have had 'location' instead of 'category'.
+
+    This function NEVER tries to add a column that already exists.
     """
     with _conn() as con:
         cur = con.cursor()
 
+        # Create shopping table (new shape)
         cur.execute("""
         CREATE TABLE IF NOT EXISTS shopping_items (
             uid TEXT PRIMARY KEY,
@@ -41,32 +43,34 @@ def init_shopping_tables() -> None:
         )
         """)
 
-        # Create pantry table in its new shape (category instead of location)
+        # Create pantry table in a minimal safe way first (do not assume old columns)
+        # If it already exists, this does nothing.
         cur.execute("""
         CREATE TABLE IF NOT EXISTS pantry_items (
             uid TEXT PRIMARY KEY,
             text TEXT NOT NULL,
             qty REAL NOT NULL DEFAULT 1,
-            category TEXT NOT NULL DEFAULT 'Ukategoriseret',
             created_at TEXT DEFAULT (datetime('now'))
         )
         """)
 
-        # Migrations
+        # --- Migrations for shopping_items
         cols_shopping = _table_cols(con, "shopping_items")
         if "category" not in cols_shopping:
             cur.execute("ALTER TABLE shopping_items ADD COLUMN category TEXT NOT NULL DEFAULT 'Ukategoriseret'")
 
+        # --- Migrations for pantry_items
         cols_pantry = _table_cols(con, "pantry_items")
 
-        # If older schema had location, copy it into category (best-effort)
-        if "location" in cols_pantry and "category" not in cols_pantry:
-            cur.execute("ALTER TABLE pantry_items ADD COLUMN category TEXT NOT NULL DEFAULT 'Ukategoriseret'")
-            cur.execute("UPDATE pantry_items SET category = COALESCE(location, 'Ukategoriseret')")
-
+        # If old schema had location but no category => add category and copy location -> category
         if "category" not in cols_pantry:
-            # table existed but without category (unlikely), ensure it exists
             cur.execute("ALTER TABLE pantry_items ADD COLUMN category TEXT NOT NULL DEFAULT 'Ukategoriseret'")
+            # refresh cols after alter
+            cols_pantry = _table_cols(con, "pantry_items")
+
+        # If location exists, copy it over into category (best-effort, idempotent)
+        if "location" in cols_pantry:
+            cur.execute("UPDATE pantry_items SET category = COALESCE(category, location, 'Ukategoriseret')")
 
         con.commit()
 
@@ -77,26 +81,19 @@ def init_shopping_tables() -> None:
 def fetch_shopping() -> List[Tuple[str, str, float, str]]:
     with _conn() as con:
         rows = con.execute("""
-            SELECT uid, text, qty, category
+            SELECT uid, text, qty, COALESCE(category, 'Ukategoriseret')
             FROM shopping_items
-            ORDER BY category COLLATE NOCASE, created_at ASC
+            ORDER BY COALESCE(category, 'Ukategoriseret') COLLATE NOCASE, created_at ASC
         """).fetchall()
     return [(r[0], r[1], float(r[2]), r[3] or "Ukategoriseret") for r in rows]
 
 
 def fetch_pantry() -> List[Tuple[str, str, float, str]]:
     with _conn() as con:
-        # if an old DB still has location, coalesce into category
         cols = _table_cols(con, "pantry_items")
-        if "location" in cols and "category" in cols:
+        if "location" in cols:
             q = """
                 SELECT uid, text, qty, COALESCE(category, location, 'Ukategoriseret') as cat
-                FROM pantry_items
-                ORDER BY cat COLLATE NOCASE, created_at ASC
-            """
-        elif "location" in cols:
-            q = """
-                SELECT uid, text, qty, COALESCE(location, 'Ukategoriseret') as cat
                 FROM pantry_items
                 ORDER BY cat COLLATE NOCASE, created_at ASC
             """
@@ -142,7 +139,7 @@ def pop_shopping(uid: str) -> Optional[Tuple[str, float, str]]:
     with _conn() as con:
         cur = con.cursor()
         row = cur.execute(
-            "SELECT text, qty, category FROM shopping_items WHERE uid=?",
+            "SELECT text, qty, COALESCE(category,'Ukategoriseret') FROM shopping_items WHERE uid=?",
             (uid,),
         ).fetchone()
 
@@ -153,7 +150,7 @@ def pop_shopping(uid: str) -> Optional[Tuple[str, float, str]]:
         con.commit()
 
         text, qty, category = row
-        return (text, float(qty), (category or "Ukategoriseret"))
+        return (text, float(qty), category or "Ukategoriseret")
 
 
 # -----------------------------
@@ -173,9 +170,12 @@ def pantry_add_or_merge(text: str, qty: float, category: str) -> None:
     with _conn() as con:
         cur = con.cursor()
 
-        # merge on lower(text) + category
         row = cur.execute(
-            "SELECT uid, qty FROM pantry_items WHERE lower(text)=? AND COALESCE(category,'Ukategoriseret')=?",
+            """
+            SELECT uid, qty
+            FROM pantry_items
+            WHERE lower(text)=? AND COALESCE(category,'Ukategoriseret')=?
+            """,
             (text_key, category),
         ).fetchone()
 
