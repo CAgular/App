@@ -1,4 +1,3 @@
-# src/app_state.py
 import os
 import streamlit as st
 
@@ -38,22 +37,30 @@ def get_drive():
 
 def init_app_state():
     """
-    Kaldes på hver side. Sikker og enkel.
-    - Sørger for mapper
-    - Forsøger at hente DB fra Drive ved session-start (hvis drive virker)
-    - Init DB schema/migrations
+    Kaldes på hver side.
+    Performance-fix:
+      - Download DB fra Drive KUN én gang pr session (ikke ved hver rerun).
     """
     ensure_dirs()
 
     drive, drive_error = get_drive()
 
+    # kun én gang pr session
+    ss = st.session_state
+    if "drive_db_checked" not in ss:
+        ss["drive_db_checked"] = False
+
     downloaded_db = False
-    if drive is not None:
+    if drive is not None and not ss["drive_db_checked"]:
         try:
             from drive_sync import download_if_exists, FOLDER_ID
             downloaded_db = download_if_exists(drive, FOLDER_ID, DB_DRIVE_NAME, DB_PATH)
         except Exception:
             downloaded_db = False
+        finally:
+            ss["drive_db_checked"] = True  # uanset succes
+    else:
+        downloaded_db = False
 
     init_db()
 
