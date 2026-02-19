@@ -1,3 +1,4 @@
+# pages/Shopping.py
 # -*- coding: utf-8 -*-
 import streamlit as st
 
@@ -14,7 +15,8 @@ from src.storage_shopping import (
     pantry_set_location,
     pantry_used_add_back,
 )
-from drive_sync import upload_or_update, FOLDER_ID
+
+import drive_sync  # robust: så crasher vi ikke på "from drive_sync import ..."
 
 st.set_page_config(page_title=f"{APP_TITLE} • Shopping", page_icon="🛒", layout="centered")
 st.link_button("⬅️ Tilbage til forside", "/")
@@ -42,13 +44,15 @@ with st.expander("Drive sync status", expanded=False):
             else "No database found in Drive (or first run). Using local DB."
         )
 
+
 def sync_db():
     if drive is None:
         return
     try:
-        upload_or_update(drive, FOLDER_ID, DB_PATH, DB_DRIVE_NAME)
+        drive_sync.upload_or_update(drive, drive_sync.FOLDER_ID, DB_PATH, DB_DRIVE_NAME)
     except Exception as e:
         st.warning(f"Saved locally, but failed to sync DB to Drive: {e}")
+
 
 def _parse_qty(s) -> float:
     s = (s or "").strip()
@@ -61,13 +65,12 @@ def _parse_qty(s) -> float:
         return 1.0
     return 1.0 if q <= 0 else q
 
+
 def _fmt_qty(q: float) -> str:
     q = float(q)
     return str(int(q)) if q.is_integer() else str(q)
 
-# -----------------------------
-# UI state defaults
-# -----------------------------
+
 ss = st.session_state
 ss.setdefault("new_item_text", "")
 ss.setdefault("new_item_qty_text", "1")
@@ -96,10 +99,8 @@ ss.setdefault("pantry_locations", [
     "Ukategoriseret",
 ])
 
-# Prompt for "Brugt"
 ss.setdefault("pantry_prompt_uid", None)
 ss.setdefault("pantry_prompt_qty_text", "1")
-
 
 tab_shop, tab_pantry = st.tabs(["Indkøbsliste", "Hjemme"])
 
@@ -109,24 +110,9 @@ tab_shop, tab_pantry = st.tabs(["Indkøbsliste", "Hjemme"])
 with tab_shop:
     with st.form("add_item_form", border=False):
         with st.container(horizontal=True, vertical_alignment="bottom"):
-            st.text_input(
-                "Vare",
-                label_visibility="collapsed",
-                placeholder="Tilføj vare…",
-                key="new_item_text",
-            )
-            st.text_input(
-                "Antal",
-                label_visibility="collapsed",
-                placeholder="Antal",
-                key="new_item_qty_text",
-            )
-            st.selectbox(
-                "Kategori",
-                ss["shopping_categories"],
-                key="new_item_cat",
-                label_visibility="collapsed",
-            )
+            st.text_input("Vare", label_visibility="collapsed", placeholder="Tilføj vare…", key="new_item_text")
+            st.text_input("Antal", label_visibility="collapsed", placeholder="Antal", key="new_item_qty_text")
+            st.selectbox("Kategori", ss["shopping_categories"], key="new_item_cat", label_visibility="collapsed")
             submitted = st.form_submit_button("Tilføj", icon=":material/add:")
 
         if submitted:
@@ -144,7 +130,6 @@ with tab_shop:
     if not rows:
         st.info("Listen er tom.")
     else:
-        # Sortér via kategorier, men vis ikke kategori på linjerne
         def cat_key(c: str):
             return ("zzzz" if c == "Ukategoriseret" else c.lower())
 
@@ -157,7 +142,6 @@ with tab_shop:
                     with st.container(horizontal=True, vertical_alignment="center"):
                         st.markdown(f"{_fmt_qty(qty)} × {text}")
 
-                        # Købt -> flyt til Hjemme (pantry)
                         if st.button("Købt", key=f"shop_b_{uid}", type="secondary"):
                             popped = pop_shopping(uid)
                             if popped:
@@ -166,7 +150,6 @@ with tab_shop:
                                 sync_db()
                             st.rerun()
 
-                        # Fjern
                         if st.button(":material/delete:", key=f"shop_r_{uid}", type="tertiary"):
                             delete_shopping(uid)
                             sync_db()
@@ -176,25 +159,18 @@ with tab_shop:
 # TAB: Hjemme
 # -----------------------------
 with tab_pantry:
-    # Prompt UI når man trykker "Brugt"
     prompt_uid = ss.get("pantry_prompt_uid")
     if prompt_uid:
         with st.container(border=True):
             st.markdown("**Tilføj til indkøbslisten igen?**")
             c1, c2, c3 = st.columns([0.5, 0.25, 0.25], gap="small")
             with c1:
-                st.text_input(
-                    "Antal",
-                    label_visibility="collapsed",
-                    placeholder="Antal",
-                    key="pantry_prompt_qty_text",
-                )
+                st.text_input("Antal", label_visibility="collapsed", placeholder="Antal", key="pantry_prompt_qty_text")
             with c2:
                 if st.button("Ja", type="primary", key="pantry_yes"):
                     qty_used = _parse_qty(ss["pantry_prompt_qty_text"])
                     text = pantry_used_add_back(prompt_uid, qty_used)
                     if text:
-                        # kategori er ikke nødvendig her; du ønskede primært placering i pantry
                         add_shopping(text=text, qty=qty_used, category="Ukategoriseret")
                         sync_db()
                     ss["pantry_prompt_uid"] = None
@@ -210,7 +186,6 @@ with tab_pantry:
     if not pantry_rows:
         st.info("Ingen varer registreret derhjemme endnu.")
     else:
-        # Gruppér efter placering (her giver det mening at vise)
         def loc_key(x: str):
             return ("zzzz" if x == "Ukategoriseret" else x.lower())
 
@@ -228,7 +203,6 @@ with tab_pantry:
                     with st.container(horizontal=True, vertical_alignment="center"):
                         st.markdown(f"{_fmt_qty(qty)} × {text}")
 
-                        # Placering select (huskes pr varenavn via DB)
                         sel_key = f"loc_{uid}"
                         if sel_key not in ss:
                             ss[sel_key] = location if location in ss["pantry_locations"] else "Ukategoriseret"
@@ -244,7 +218,6 @@ with tab_pantry:
                             sync_db()
                             st.rerun()
 
-                        # Brugt -> prompt
                         if st.button("Brugt", key=f"used_{uid}", type="secondary"):
                             ss["pantry_prompt_uid"] = uid
                             ss["pantry_prompt_qty_text"] = "1"
