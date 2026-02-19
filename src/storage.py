@@ -57,9 +57,18 @@ def save_photo_locally(uploaded_file) -> str:
     return rel_path
 
 
-def add_memory(text: str, tags: str, photo_path: str, photo_drive_id=None, photo_drive_name=None) -> None:
+def add_memory(
+    text: str,
+    tags: str,
+    photo_path: str,
+    photo_drive_id=None,
+    photo_drive_name=None,
+) -> None:
     mem_id = uuid.uuid4().hex
     created_at = datetime.now().isoformat(timespec="seconds")
+
+    text = (text or "").strip()
+    tags = (tags or "").strip()
 
     with get_conn() as conn:
         conn.execute(
@@ -67,7 +76,7 @@ def add_memory(text: str, tags: str, photo_path: str, photo_drive_id=None, photo
             INSERT INTO memories (id, created_at, text, tags, photo_path, photo_drive_id, photo_drive_name)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (mem_id, created_at, text.strip(), tags.strip(), photo_path, photo_drive_id, photo_drive_name),
+            (mem_id, created_at, text, tags, photo_path, photo_drive_id, photo_drive_name),
         )
         conn.commit()
 
