@@ -10,6 +10,7 @@ from src.storage_shopping import (
     fetch_pantry,
     fetch_standards,
     upsert_standard,
+    delete_standard,
     add_shopping,
     delete_shopping,
     pop_shopping,
@@ -17,8 +18,8 @@ from src.storage_shopping import (
     get_pantry_item,
     pantry_consume,
     pantry_move_category,
-    get_textkeys_in_pantry,
-    get_textkeys_in_shopping,
+    set_shopping_standard,
+    set_pantry_standard,
 )
 
 import drive_sync
@@ -38,20 +39,30 @@ init_shopping_tables()
 
 st.title("🛒 Shopping")
 
+ss = st.session_state
+ss.setdefault("autosync", True)
+ss.setdefault("pantry_prompt_uid", None)
+
 with st.expander("Drive sync status", expanded=False):
     if drive is None:
         st.warning(f"Drive sync disabled (could not connect): {drive_error}")
     else:
         st.success("Drive connected ✅")
-        st.info(
-            "Downloaded latest database from Drive ✅"
-            if downloaded_db
-            else "No database found in Drive (or first run). Using local DB."
-        )
+        if downloaded_db:
+            st.info("Downloaded latest database from Drive ✅")
+
+        ss["autosync"] = st.checkbox("Auto-sync til Drive", value=ss["autosync"])
+        if st.button("Sync nu", type="tertiary"):
+            try:
+                drive_sync.upload_or_update(drive, drive_sync.FOLDER_ID, DB_PATH, DB_DRIVE_NAME)
+                st.success("Synced ✅")
+            except Exception as e:
+                st.warning(f"Kunne ikke sync'e: {e}")
 
 
 def sync_db():
-    if drive is None:
+    # Speed: allow turning autosync off (so clicks feel instant)
+    if drive is None or not ss.get("autosync", True):
         return
     try:
         drive_sync.upload_or_update(drive, drive_sync.FOLDER_ID, DB_PATH, DB_DRIVE_NAME)
@@ -82,7 +93,6 @@ def _sorted_categories(rows, idx_cat: int):
     return sorted({(r[idx_cat] or "Ukategoriseret") for r in rows}, key=key)
 
 
-ss = st.session_state
 ss.setdefault(
     "shopping_categories",
     [
@@ -97,7 +107,6 @@ ss.setdefault(
         "Ukategoriseret",
     ],
 )
-ss.setdefault("pantry_prompt_uid", None)
 
 tab_shop, tab_pantry = st.tabs(["Indkøbsliste", "Hjemme"])
 
@@ -113,8 +122,7 @@ with tab_shop:
                 "Kategori",
                 ss["shopping_categories"],
                 index=ss["shopping_categories"].index("Ukategoriseret")
-                if "Ukategoriseret" in ss["shopping_categories"]
-                else 0,
+                if "Ukategoriseret" in ss["shopping_categories"] else 0,
                 key="new_item_cat",
                 label_visibility="collapsed",
             )
@@ -131,15 +139,13 @@ with tab_shop:
                 add_shopping(text=text, qty=qty, category=cat, is_standard=is_std)
                 if is_std:
                     upsert_standard(text=text, category=cat, default_qty=qty)
-
                 sync_db()
             st.rerun()
 
-    rows = fetch_shopping()
+    rows = fetch_shopping()  # (uid,text,qty,cat,is_std)
     if not rows:
         st.info("Listen er tom.")
     else:
-        # rows: (uid, text, qty, category, is_standard)
         for cat in _sorted_categories(rows, idx_cat=3):
             group = [r for r in rows if (r[3] or "Ukategoriseret") == cat]
             if not group:
@@ -149,9 +155,23 @@ with tab_shop:
                 st.caption(cat)
 
                 for uid, text, qty, _cat, is_std in group:
-                    label = f"{_fmt_qty(qty)} × {text}" + ("  ⭐" if is_std else "")
                     with st.container(horizontal=True, vertical_alignment="center"):
-                        st.markdown(label)
+                        st.markdown(f"{_fmt_qty(qty)} × {text}")
+
+                        # ⭐ toggle (remove / add standard)
+                        star_label = "⭐" if is_std else "☆"
+                        if st.button(star_label, key=f"shop_star_{uid}", type="tertiary", help="Toggle standardvare"):
+                            new_std = 0 if is_std else 1
+                            info = set_shopping_standard(uid, new_std)
+                            if info:
+                                t, c, q = info
+                                if new_std == 1:
+                                    upsert_standard(t, c, q)
+                                else:
+                                    # removing standard removes it from catalog
+                                    delete_standard(t)
+                                sync_db()
+                            st.rerun()
 
                         if st.button("Købt", key=f"shop_b_{uid}", type="secondary"):
                             popped = pop_shopping(uid)
@@ -181,8 +201,7 @@ with tab_pantry:
                 "Kategori",
                 ss["shopping_categories"],
                 index=ss["shopping_categories"].index("Ukategoriseret")
-                if "Ukategoriseret" in ss["shopping_categories"]
-                else 0,
+                if "Ukategoriseret" in ss["shopping_categories"] else 0,
                 key="pantry_new_cat",
                 label_visibility="collapsed",
             )
@@ -199,19 +218,18 @@ with tab_pantry:
                 pantry_add_or_merge(text, qty, cat, is_standard=is_std)
                 if is_std:
                     upsert_standard(text=text, category=cat, default_qty=qty)
-
                 sync_db()
             st.rerun()
 
     # Prompt when clicking "Brugt"
     prompt_uid = ss.get("pantry_prompt_uid")
     if prompt_uid:
-        info = get_pantry_item(prompt_uid)  # (text, qty, category, is_std)
+        info = get_pantry_item(prompt_uid)  # (text, qty, cat, is_std)
         if info:
             p_text, p_qty, p_cat, p_std = info
             default_key = f"used_qty_{prompt_uid}"
             if default_key not in ss:
-                ss[default_key] = _fmt_qty(p_qty)  # default = samme antal som i hjemme
+                ss[default_key] = _fmt_qty(p_qty)
 
             with st.container(border=True):
                 st.markdown(f"**Brugt: {p_text}** ({_fmt_qty(p_qty)} ×)  \nTilføj til indkøbslisten igen?")
@@ -233,13 +251,13 @@ with tab_pantry:
                             t, c, is_std = res
                             add_shopping(text=t, qty=qty_used, category=c, is_standard=is_std)
                             if is_std:
-                                upsert_standard(text=t, category=c, default_qty=qty_used)
+                                upsert_standard(t, c, qty_used)
                             sync_db()
                         ss["pantry_prompt_uid"] = None
                         st.rerun()
 
                     if no:
-                        # Forbrug varen og tilføj ikke til indkøbslisten
+                        # consume and don't add back
                         res = pantry_consume(prompt_uid, qty_used)
                         if res:
                             sync_db()
@@ -248,7 +266,13 @@ with tab_pantry:
         else:
             ss["pantry_prompt_uid"] = None
 
-    pantry_rows = fetch_pantry()  # (uid, text, qty, category, is_standard)
+    pantry_rows = fetch_pantry()  # (uid,text,qty,cat,is_std)
+
+    # Build sets for standard status without extra DB queries (speed)
+    pantry_textkeys = {t.strip().lower() for (_, t, _, _, _) in pantry_rows} if pantry_rows else set()
+    shopping_rows_now = fetch_shopping()
+    shopping_textkeys = {t.strip().lower() for (_, t, _, _, _) in shopping_rows_now} if shopping_rows_now else set()
+
     if not pantry_rows:
         st.info("Ingen varer registreret derhjemme endnu.")
     else:
@@ -261,11 +285,24 @@ with tab_pantry:
                 st.caption(cat)
 
                 for uid, text, qty, _cat, is_std in group:
-                    label = f"{_fmt_qty(qty)} × {text}" + ("  ⭐" if is_std else "")
                     with st.container(horizontal=True, vertical_alignment="center"):
-                        st.markdown(label)
+                        st.markdown(f"{_fmt_qty(qty)} × {text}")
 
-                        # Hurtig flyt til Frost
+                        # ⭐ toggle
+                        star_label = "⭐" if is_std else "☆"
+                        if st.button(star_label, key=f"pantry_star_{uid}", type="tertiary", help="Toggle standardvare"):
+                            new_std = 0 if is_std else 1
+                            info2 = set_pantry_standard(uid, new_std)
+                            if info2:
+                                t, c, q = info2
+                                if new_std == 1:
+                                    upsert_standard(t, c, q)
+                                else:
+                                    delete_standard(t)
+                                sync_db()
+                            st.rerun()
+
+                        # Quick move to Frost
                         if _cat != "Frost":
                             if st.button("→ Frost", key=f"to_frost_{uid}", type="tertiary"):
                                 changed = pantry_move_category(uid, "Frost")
@@ -275,23 +312,18 @@ with tab_pantry:
 
                         if st.button("Brugt", key=f"used_{uid}", type="secondary"):
                             ss["pantry_prompt_uid"] = uid
-                            ss[f"used_qty_{uid}"] = _fmt_qty(qty)  # default qty = samme som vist
+                            ss[f"used_qty_{uid}"] = _fmt_qty(qty)
                             st.rerun()
 
-    # -----------------------------
-    # Standardvarer boks nederst (forslag 3)
-    # -----------------------------
+    # Standard box (split missing / rest) – using already-built sets (speed)
     standards = fetch_standards()  # (text, category, default_qty)
     if standards:
-        pantry_keys = get_textkeys_in_pantry()
-        shopping_keys = get_textkeys_in_shopping()
-
         missing = []
         present = []
         for text, cat, default_qty in standards:
             k = (text or "").strip().lower()
-            in_home = k in pantry_keys
-            in_shop = k in shopping_keys
+            in_home = k in pantry_textkeys
+            in_shop = k in shopping_textkeys
 
             if in_home and in_shop:
                 status = "✅ Hjemme • 🛒 På liste"
@@ -323,7 +355,6 @@ with tab_pantry:
                             add_shopping(text=text, qty=default_qty, category=cat, is_standard=1)
                             sync_db()
                             st.rerun()
-
                 st.markdown("---")
 
             st.markdown("**Resten**")
