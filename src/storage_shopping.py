@@ -16,6 +16,10 @@ def _table_cols(con: sqlite3.Connection, table: str) -> set[str]:
     return {r[1] for r in rows}
 
 
+def _key(text: str) -> str:
+    return (text or "").strip().lower()
+
+
 def init_shopping_tables() -> None:
     """
     shopping_items: uid, text, qty, category, is_standard, created_at
@@ -84,10 +88,6 @@ def init_shopping_tables() -> None:
 # -----------------------------
 # Standard catalog
 # -----------------------------
-def _key(text: str) -> str:
-    return (text or "").strip().lower()
-
-
 def upsert_standard(text: str, category: str, default_qty: float = 1.0) -> None:
     text = (text or "").strip()
     if not text:
@@ -111,9 +111,7 @@ def upsert_standard(text: str, category: str, default_qty: float = 1.0) -> None:
 
 
 def fetch_standards() -> List[Tuple[str, str, float]]:
-    """
-    Returns list of (text, category, default_qty)
-    """
+    """Returns list of (text, category, default_qty)."""
     with _conn() as con:
         rows = con.execute(
             """
@@ -181,7 +179,6 @@ def add_shopping(text: str, qty: float, category: str, is_standard: int = 0) -> 
     text = (text or "").strip()
     if not text:
         return
-
     qty = float(qty) if qty and qty > 0 else 1.0
     category = (category or "Ukategoriseret").strip() or "Ukategoriseret"
     is_standard = 1 if is_standard else 0
@@ -244,7 +241,6 @@ def pantry_add_or_merge(text: str, qty: float, category: str, is_standard: int =
 
         if row:
             puid, old_qty, old_std = row
-            # merge qty and keep standard flag if either is standard
             new_std = 1 if (int(old_std or 0) == 1 or is_standard == 1) else 0
             cur.execute(
                 "UPDATE pantry_items SET qty=?, is_standard=? WHERE uid=?",
@@ -262,7 +258,7 @@ def pantry_add_or_merge(text: str, qty: float, category: str, is_standard: int =
 def pantry_consume(uid: str, qty_used: float) -> Optional[Tuple[str, str, int]]:
     """
     Subtract qty_used from pantry item. Delete if <=0.
-    Returns (text, category, is_standard) for possible re-add decisions.
+    Returns (text, category, is_standard).
     """
     qty_used = float(qty_used) if qty_used and qty_used > 0 else 1.0
 
@@ -286,6 +282,49 @@ def pantry_consume(uid: str, qty_used: float) -> Optional[Tuple[str, str, int]]:
 
         con.commit()
         return (text, category or "Ukategoriseret", int(is_std or 0))
+
+
+def pantry_move_category(uid: str, new_category: str) -> bool:
+    """
+    Flyt et pantry-item til en ny kategori og merge hvis samme vare allerede findes dér.
+    Returnerer True hvis noget blev ændret.
+    """
+    new_category = (new_category or "Ukategoriseret").strip() or "Ukategoriseret"
+
+    with _conn() as con:
+        cur = con.cursor()
+        row = cur.execute(
+            "SELECT text, qty, COALESCE(category,'Ukategoriseret'), COALESCE(is_standard,0) FROM pantry_items WHERE uid=?",
+            (uid,),
+        ).fetchone()
+        if not row:
+            return False
+
+        text, qty, old_cat, is_std = row
+        if (old_cat or "Ukategoriseret") == new_category:
+            return False
+
+        # find existing in target category
+        row2 = cur.execute(
+            """
+            SELECT uid, qty, COALESCE(is_standard,0)
+            FROM pantry_items
+            WHERE lower(text)=? AND COALESCE(category,'Ukategoriseret')=?
+            """,
+            (text.strip().lower(), new_category),
+        ).fetchone()
+
+        if row2:
+            uid2, qty2, is_std2 = row2
+            new_qty = float(qty2) + float(qty)
+            new_std = 1 if (int(is_std or 0) == 1 or int(is_std2 or 0) == 1) else 0
+            cur.execute("UPDATE pantry_items SET qty=?, is_standard=? WHERE uid=?", (new_qty, new_std, uid2))
+            cur.execute("DELETE FROM pantry_items WHERE uid=?", (uid,))
+        else:
+            cur.execute("UPDATE pantry_items SET category=? WHERE uid=?", (new_category, uid))
+
+        con.commit()
+        return True
 
 
 # -----------------------------
