@@ -1,10 +1,8 @@
-# src/app_state.py
 import os
 import streamlit as st
 
 from .config import DB_PATH, DB_DRIVE_NAME, PHOTOS_DIR, PHOTOS_CACHE_DIR
 from .storage import init_db
-from drive_sync import connect_drive, download_if_exists, FOLDER_ID
 
 
 def ensure_dirs() -> None:
@@ -13,20 +11,26 @@ def ensure_dirs() -> None:
     os.makedirs(PHOTOS_CACHE_DIR, exist_ok=True)
 
 
+def _looks_like_invalid_grant(err: Exception) -> bool:
+    s = str(err).lower()
+    return ("invalid_grant" in s) or ("token has been expired or revoked" in s)
+
+
 @st.cache_resource(show_spinner=False)
 def get_drive():
     """
     Cache Drive-connection pr session.
-    Hvis den fejler, returnerer vi None og en fejlbesked.
-    Hvis invalid_grant -> clear cache, så næste rerun kan prøve igen efter du har opdateret secrets.
+    Importerer drive_sync lazy (så app ikke crasher hvis drive_sync/pydrive2 fejler).
     """
     try:
+        # Lazy import (vigtigt!)
+        from drive_sync import connect_drive  # noqa: F401
         drive = connect_drive()
         return drive, None
+
     except Exception as e:
-        s = str(e).lower()
-        if "invalid_grant" in s or "token has been expired or revoked" in s:
-            # Vigtigt: ellers kan en "død" error blive cached hele sessionen
+        # Hvis invalid_grant, ryd cache så næste rerun kan prøve igen efter secrets er opdateret
+        if _looks_like_invalid_grant(e):
             try:
                 get_drive.clear()
             except Exception:
@@ -48,6 +52,8 @@ def init_app_state():
     downloaded_db = False
     if drive is not None:
         try:
+            # Lazy import her også
+            from drive_sync import download_if_exists, FOLDER_ID
             downloaded_db = download_if_exists(drive, FOLDER_ID, DB_DRIVE_NAME, DB_PATH)
         except Exception:
             downloaded_db = False
