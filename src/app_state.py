@@ -1,3 +1,4 @@
+# src/app_state.py
 import os
 import streamlit as st
 
@@ -17,11 +18,19 @@ def get_drive():
     """
     Cache Drive-connection pr session.
     Hvis den fejler, returnerer vi None og en fejlbesked.
+    Hvis invalid_grant -> clear cache, så næste rerun kan prøve igen efter du har opdateret secrets.
     """
     try:
         drive = connect_drive()
         return drive, None
     except Exception as e:
+        s = str(e).lower()
+        if "invalid_grant" in s or "token has been expired or revoked" in s:
+            # Vigtigt: ellers kan en "død" error blive cached hele sessionen
+            try:
+                get_drive.clear()
+            except Exception:
+                pass
         return None, e
 
 
