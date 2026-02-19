@@ -11,7 +11,23 @@ def _conn():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
 
+def _table_cols(con: sqlite3.Connection, table: str) -> set[str]:
+    rows = con.execute(f"PRAGMA table_info({table})").fetchall()
+    # row[1] is column name
+    return {r[1] for r in rows}
+
+
 def init_shopping_tables() -> None:
+    """
+    Create tables + simple migrations.
+
+    We store categories on both lists:
+      - shopping_items.category
+      - pantry_items.category
+
+    Migration note:
+      If an older pantry_items had 'location' column, we add 'category' and copy location->category.
+    """
     with _conn() as con:
         cur = con.cursor()
 
@@ -25,26 +41,39 @@ def init_shopping_tables() -> None:
         )
         """)
 
+        # Create pantry table in its new shape (category instead of location)
         cur.execute("""
         CREATE TABLE IF NOT EXISTS pantry_items (
             uid TEXT PRIMARY KEY,
             text TEXT NOT NULL,
             qty REAL NOT NULL DEFAULT 1,
-            location TEXT NOT NULL DEFAULT 'Ukategoriseret',
+            category TEXT NOT NULL DEFAULT 'Ukategoriseret',
             created_at TEXT DEFAULT (datetime('now'))
         )
         """)
 
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS pantry_location_memory (
-            text_key TEXT PRIMARY KEY,
-            location TEXT NOT NULL
-        )
-        """)
+        # Migrations
+        cols_shopping = _table_cols(con, "shopping_items")
+        if "category" not in cols_shopping:
+            cur.execute("ALTER TABLE shopping_items ADD COLUMN category TEXT NOT NULL DEFAULT 'Ukategoriseret'")
+
+        cols_pantry = _table_cols(con, "pantry_items")
+
+        # If older schema had location, copy it into category (best-effort)
+        if "location" in cols_pantry and "category" not in cols_pantry:
+            cur.execute("ALTER TABLE pantry_items ADD COLUMN category TEXT NOT NULL DEFAULT 'Ukategoriseret'")
+            cur.execute("UPDATE pantry_items SET category = COALESCE(location, 'Ukategoriseret')")
+
+        if "category" not in cols_pantry:
+            # table existed but without category (unlikely), ensure it exists
+            cur.execute("ALTER TABLE pantry_items ADD COLUMN category TEXT NOT NULL DEFAULT 'Ukategoriseret'")
 
         con.commit()
 
 
+# -----------------------------
+# Fetch
+# -----------------------------
 def fetch_shopping() -> List[Tuple[str, str, float, str]]:
     with _conn() as con:
         rows = con.execute("""
@@ -52,33 +81,50 @@ def fetch_shopping() -> List[Tuple[str, str, float, str]]:
             FROM shopping_items
             ORDER BY category COLLATE NOCASE, created_at ASC
         """).fetchall()
-    return rows
+    return [(r[0], r[1], float(r[2]), r[3] or "Ukategoriseret") for r in rows]
 
 
 def fetch_pantry() -> List[Tuple[str, str, float, str]]:
     with _conn() as con:
-        rows = con.execute("""
-            SELECT uid, text, qty, location
-            FROM pantry_items
-            ORDER BY location COLLATE NOCASE, created_at ASC
-        """).fetchall()
-    return rows
+        # if an old DB still has location, coalesce into category
+        cols = _table_cols(con, "pantry_items")
+        if "location" in cols and "category" in cols:
+            q = """
+                SELECT uid, text, qty, COALESCE(category, location, 'Ukategoriseret') as cat
+                FROM pantry_items
+                ORDER BY cat COLLATE NOCASE, created_at ASC
+            """
+        elif "location" in cols:
+            q = """
+                SELECT uid, text, qty, COALESCE(location, 'Ukategoriseret') as cat
+                FROM pantry_items
+                ORDER BY cat COLLATE NOCASE, created_at ASC
+            """
+        else:
+            q = """
+                SELECT uid, text, qty, COALESCE(category, 'Ukategoriseret') as cat
+                FROM pantry_items
+                ORDER BY cat COLLATE NOCASE, created_at ASC
+            """
+        rows = con.execute(q).fetchall()
+    return [(r[0], r[1], float(r[2]), r[3] or "Ukategoriseret") for r in rows]
 
 
+# -----------------------------
+# Shopping operations
+# -----------------------------
 def add_shopping(text: str, qty: float, category: str) -> None:
     text = (text or "").strip()
     if not text:
         return
 
-    if qty <= 0:
-        qty = 1.0
+    qty = float(qty) if qty and qty > 0 else 1.0
     category = (category or "Ukategoriseret").strip() or "Ukategoriseret"
-    uid = str(uuid.uuid4())
 
     with _conn() as con:
         con.execute(
             "INSERT INTO shopping_items (uid, text, qty, category) VALUES (?, ?, ?, ?)",
-            (uid, text, float(qty), category),
+            (str(uuid.uuid4()), text, qty, category),
         )
         con.commit()
 
@@ -90,6 +136,9 @@ def delete_shopping(uid: str) -> None:
 
 
 def pop_shopping(uid: str) -> Optional[Tuple[str, float, str]]:
+    """
+    Remove a shopping row and return (text, qty, category).
+    """
     with _conn() as con:
         cur = con.cursor()
         row = cur.execute(
@@ -104,96 +153,68 @@ def pop_shopping(uid: str) -> Optional[Tuple[str, float, str]]:
         con.commit()
 
         text, qty, category = row
-        return (text, float(qty), category)
+        return (text, float(qty), (category or "Ukategoriseret"))
 
 
-def _get_remembered_location(cur, text: str) -> str:
-    text_key = text.strip().lower()
-    loc_row = cur.execute(
-        "SELECT location FROM pantry_location_memory WHERE text_key=?",
-        (text_key,),
-    ).fetchone()
-    return (loc_row[0] if loc_row else "Ukategoriseret") or "Ukategoriseret"
-
-
-def pantry_add_or_merge(text: str, qty: float) -> str:
+# -----------------------------
+# Pantry operations (category-based)
+# -----------------------------
+def pantry_add_or_merge(text: str, qty: float, category: str) -> None:
     """
-    Når du trykker 'Købt': tilføj til Hjemme-liste (pantry)
-    - bruger remembered location for varenavn
-    - merger qty hvis samme text+location allerede findes
+    Add to pantry and merge qty if same text+category exists.
     """
     text = (text or "").strip()
     if not text:
-        return "Ukategoriseret"
-    if qty <= 0:
-        qty = 1.0
+        return
+    qty = float(qty) if qty and qty > 0 else 1.0
+    category = (category or "Ukategoriseret").strip() or "Ukategoriseret"
+    text_key = text.lower()
 
     with _conn() as con:
         cur = con.cursor()
-        location = _get_remembered_location(cur, text)
 
+        # merge on lower(text) + category
         row = cur.execute(
-            "SELECT uid, qty FROM pantry_items WHERE lower(text)=? AND location=?",
-            (text.lower(), location),
+            "SELECT uid, qty FROM pantry_items WHERE lower(text)=? AND COALESCE(category,'Ukategoriseret')=?",
+            (text_key, category),
         ).fetchone()
 
         if row:
             puid, old_qty = row
             cur.execute(
                 "UPDATE pantry_items SET qty=? WHERE uid=?",
-                (float(old_qty) + float(qty), puid),
+                (float(old_qty) + qty, puid),
             )
         else:
-            puid = str(uuid.uuid4())
             cur.execute(
-                "INSERT INTO pantry_items (uid, text, qty, location) VALUES (?, ?, ?, ?)",
-                (puid, text, float(qty), location),
-            )
-
-        con.commit()
-        return location
-
-
-def pantry_set_location(uid: str, text: str, location: str) -> None:
-    location = (location or "Ukategoriseret").strip() or "Ukategoriseret"
-    text_key = (text or "").strip().lower()
-
-    with _conn() as con:
-        cur = con.cursor()
-        cur.execute("UPDATE pantry_items SET location=? WHERE uid=?", (location, uid))
-
-        if text_key:
-            cur.execute(
-                "INSERT INTO pantry_location_memory (text_key, location) VALUES (?, ?) "
-                "ON CONFLICT(text_key) DO UPDATE SET location=excluded.location",
-                (text_key, location),
+                "INSERT INTO pantry_items (uid, text, qty, category) VALUES (?, ?, ?, ?)",
+                (str(uuid.uuid4()), text, qty, category),
             )
 
         con.commit()
 
 
-def pantry_used_add_back(uid: str, qty_used: float) -> Optional[str]:
+def pantry_used_add_back(uid: str, qty_used: float) -> Optional[Tuple[str, str]]:
     """
-    Brugt:
-      - træk qty_used fra pantry
-      - slet række hvis qty <= 0
-      - returnér text så UI kan tilføje den på indkøbslisten igen
+    Use item from pantry:
+      - subtract qty_used
+      - delete row if qty <= 0
+      - return (text, category) so UI can add back to shopping with same category
     """
-    if qty_used <= 0:
-        qty_used = 1.0
+    qty_used = float(qty_used) if qty_used and qty_used > 0 else 1.0
 
     with _conn() as con:
         cur = con.cursor()
         row = cur.execute(
-            "SELECT text, qty FROM pantry_items WHERE uid=?",
+            "SELECT text, qty, COALESCE(category,'Ukategoriseret') FROM pantry_items WHERE uid=?",
             (uid,),
         ).fetchone()
 
         if not row:
             return None
 
-        text, qty = row
-        remaining = float(qty) - float(qty_used)
+        text, qty, category = row
+        remaining = float(qty) - qty_used
 
         if remaining > 0:
             cur.execute("UPDATE pantry_items SET qty=? WHERE uid=?", (remaining, uid))
@@ -201,4 +222,4 @@ def pantry_used_add_back(uid: str, qty_used: float) -> Optional[str]:
             cur.execute("DELETE FROM pantry_items WHERE uid=?", (uid,))
 
         con.commit()
-        return text
+        return (text, category or "Ukategoriseret")
