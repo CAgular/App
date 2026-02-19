@@ -1,3 +1,4 @@
+# src/app_state.py
 import os
 import streamlit as st
 
@@ -20,16 +21,13 @@ def _looks_like_invalid_grant(err: Exception) -> bool:
 def get_drive():
     """
     Cache Drive-connection pr session.
-    Importerer drive_sync lazy (så app ikke crasher hvis drive_sync/pydrive2 fejler).
+    Lazy-importer drive_sync så app ikke crasher ved import-problemer.
     """
     try:
-        # Lazy import (vigtigt!)
-        from drive_sync import connect_drive  # noqa: F401
+        from drive_sync import connect_drive
         drive = connect_drive()
         return drive, None
-
     except Exception as e:
-        # Hvis invalid_grant, ryd cache så næste rerun kan prøve igen efter secrets er opdateret
         if _looks_like_invalid_grant(e):
             try:
                 get_drive.clear()
@@ -52,7 +50,6 @@ def init_app_state():
     downloaded_db = False
     if drive is not None:
         try:
-            # Lazy import her også
             from drive_sync import download_if_exists, FOLDER_ID
             downloaded_db = download_if_exists(drive, FOLDER_ID, DB_DRIVE_NAME, DB_PATH)
         except Exception:
