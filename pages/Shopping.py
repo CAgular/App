@@ -16,7 +16,8 @@ from src.storage_shopping import (
     pantry_used_add_back,
 )
 
-import drive_sync  # robust: så crasher vi ikke på "from drive_sync import ..."
+import drive_sync  # robust import
+
 
 st.set_page_config(page_title=f"{APP_TITLE} • Shopping", page_icon="🛒", layout="centered")
 st.link_button("⬅️ Tilbage til forside", "/")
@@ -72,10 +73,6 @@ def _fmt_qty(q: float) -> str:
 
 
 ss = st.session_state
-ss.setdefault("new_item_text", "")
-ss.setdefault("new_item_qty_text", "1")
-ss.setdefault("new_item_cat", "Ukategoriseret")
-
 ss.setdefault("shopping_categories", [
     "Frugt & grønt",
     "Kød & fisk",
@@ -99,6 +96,7 @@ ss.setdefault("pantry_locations", [
     "Ukategoriseret",
 ])
 
+# Prompt for "Brugt"
 ss.setdefault("pantry_prompt_uid", None)
 ss.setdefault("pantry_prompt_qty_text", "1")
 
@@ -108,23 +106,40 @@ tab_shop, tab_pantry = st.tabs(["Indkøbsliste", "Hjemme"])
 # TAB: Indkøbsliste
 # -----------------------------
 with tab_shop:
-    with st.form("add_item_form", border=False):
+    # Form: clear_on_submit => vi må IKKE manuelt sætte session_state for widget keys bagefter
+    with st.form("add_item_form", border=False, clear_on_submit=True):
         with st.container(horizontal=True, vertical_alignment="bottom"):
-            st.text_input("Vare", label_visibility="collapsed", placeholder="Tilføj vare…", key="new_item_text")
-            st.text_input("Antal", label_visibility="collapsed", placeholder="Antal", key="new_item_qty_text")
-            st.selectbox("Kategori", ss["shopping_categories"], key="new_item_cat", label_visibility="collapsed")
+            st.text_input(
+                "Vare",
+                label_visibility="collapsed",
+                placeholder="Tilføj vare…",
+                key="new_item_text",
+            )
+            st.text_input(
+                "Antal",
+                label_visibility="collapsed",
+                placeholder="Antal",
+                key="new_item_qty_text",
+            )
+            st.selectbox(
+                "Kategori",
+                ss["shopping_categories"],
+                index=ss["shopping_categories"].index("Ukategoriseret")
+                if "Ukategoriseret" in ss["shopping_categories"]
+                else 0,
+                key="new_item_cat",
+                label_visibility="collapsed",
+            )
             submitted = st.form_submit_button("Tilføj", icon=":material/add:")
 
         if submitted:
-            text = (ss["new_item_text"] or "").strip()
+            text = (ss.get("new_item_text") or "").strip()
             if text:
-                qty = _parse_qty(ss["new_item_qty_text"])
-                cat = (ss["new_item_cat"] or "Ukategoriseret").strip() or "Ukategoriseret"
+                qty = _parse_qty(ss.get("new_item_qty_text"))
+                cat = (ss.get("new_item_cat") or "Ukategoriseret").strip() or "Ukategoriseret"
                 add_shopping(text=text, qty=qty, category=cat)
-                ss["new_item_text"] = ""
-                ss["new_item_qty_text"] = "1"
                 sync_db()
-                st.rerun()
+            st.rerun()
 
     rows = fetch_shopping()
     if not rows:
@@ -165,10 +180,15 @@ with tab_pantry:
             st.markdown("**Tilføj til indkøbslisten igen?**")
             c1, c2, c3 = st.columns([0.5, 0.25, 0.25], gap="small")
             with c1:
-                st.text_input("Antal", label_visibility="collapsed", placeholder="Antal", key="pantry_prompt_qty_text")
+                st.text_input(
+                    "Antal",
+                    label_visibility="collapsed",
+                    placeholder="Antal",
+                    key="pantry_prompt_qty_text",
+                )
             with c2:
                 if st.button("Ja", type="primary", key="pantry_yes"):
-                    qty_used = _parse_qty(ss["pantry_prompt_qty_text"])
+                    qty_used = _parse_qty(ss.get("pantry_prompt_qty_text"))
                     text = pantry_used_add_back(prompt_uid, qty_used)
                     if text:
                         add_shopping(text=text, qty=qty_used, category="Ukategoriseret")
