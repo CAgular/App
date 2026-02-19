@@ -1,3 +1,4 @@
+# src/storage_shopping.py
 # -*- coding: utf-8 -*-
 import sqlite3
 import uuid
@@ -34,7 +35,6 @@ def init_shopping_tables() -> None:
         )
         """)
 
-        # Husker placering pr varenavn (første gang man vælger)
         cur.execute("""
         CREATE TABLE IF NOT EXISTS pantry_location_memory (
             text_key TEXT PRIMARY KEY,
@@ -45,9 +45,6 @@ def init_shopping_tables() -> None:
         con.commit()
 
 
-# -----------------------------
-# Fetch
-# -----------------------------
 def fetch_shopping() -> List[Tuple[str, str, float, str]]:
     with _conn() as con:
         rows = con.execute("""
@@ -68,9 +65,6 @@ def fetch_pantry() -> List[Tuple[str, str, float, str]]:
     return rows
 
 
-# -----------------------------
-# Shopping operations
-# -----------------------------
 def add_shopping(text: str, qty: float, category: str) -> None:
     text = (text or "").strip()
     if not text:
@@ -79,7 +73,6 @@ def add_shopping(text: str, qty: float, category: str) -> None:
     if qty <= 0:
         qty = 1.0
     category = (category or "Ukategoriseret").strip() or "Ukategoriseret"
-
     uid = str(uuid.uuid4())
 
     with _conn() as con:
@@ -97,9 +90,6 @@ def delete_shopping(uid: str) -> None:
 
 
 def pop_shopping(uid: str) -> Optional[Tuple[str, float, str]]:
-    """
-    Remove a shopping row and return (text, qty, category).
-    """
     with _conn() as con:
         cur = con.cursor()
         row = cur.execute(
@@ -112,13 +102,11 @@ def pop_shopping(uid: str) -> Optional[Tuple[str, float, str]]:
 
         cur.execute("DELETE FROM shopping_items WHERE uid=?", (uid,))
         con.commit()
+
         text, qty, category = row
         return (text, float(qty), category)
 
 
-# -----------------------------
-# Pantry operations
-# -----------------------------
 def _get_remembered_location(cur, text: str) -> str:
     text_key = text.strip().lower()
     loc_row = cur.execute(
@@ -130,9 +118,9 @@ def _get_remembered_location(cur, text: str) -> str:
 
 def pantry_add_or_merge(text: str, qty: float) -> str:
     """
-    Add to pantry when bought.
-    Uses remembered location for text, merges qty if same text+location exists.
-    Returns the location used.
+    Når du trykker 'Købt': tilføj til Hjemme-liste (pantry)
+    - bruger remembered location for varenavn
+    - merger qty hvis samme text+location allerede findes
     """
     text = (text or "").strip()
     if not text:
@@ -144,17 +132,16 @@ def pantry_add_or_merge(text: str, qty: float) -> str:
         cur = con.cursor()
         location = _get_remembered_location(cur, text)
 
-        # merge on lower(text) + location
         row = cur.execute(
             "SELECT uid, qty FROM pantry_items WHERE lower(text)=? AND location=?",
             (text.lower(), location),
         ).fetchone()
 
         if row:
-            uid, old_qty = row
+            puid, old_qty = row
             cur.execute(
                 "UPDATE pantry_items SET qty=? WHERE uid=?",
-                (float(old_qty) + float(qty), uid),
+                (float(old_qty) + float(qty), puid),
             )
         else:
             puid = str(uuid.uuid4())
@@ -168,19 +155,12 @@ def pantry_add_or_merge(text: str, qty: float) -> str:
 
 
 def pantry_set_location(uid: str, text: str, location: str) -> None:
-    """
-    Update pantry item location and remember it per item name.
-    """
     location = (location or "Ukategoriseret").strip() or "Ukategoriseret"
     text_key = (text or "").strip().lower()
 
     with _conn() as con:
         cur = con.cursor()
-
-        cur.execute(
-            "UPDATE pantry_items SET location=? WHERE uid=?",
-            (location, uid),
-        )
+        cur.execute("UPDATE pantry_items SET location=? WHERE uid=?", (location, uid))
 
         if text_key:
             cur.execute(
@@ -192,34 +172,23 @@ def pantry_set_location(uid: str, text: str, location: str) -> None:
         con.commit()
 
 
-def pantry_get(uid: str) -> Optional[Tuple[str, float, str]]:
-    with _conn() as con:
-        row = con.execute(
-            "SELECT text, qty, location FROM pantry_items WHERE uid=?",
-            (uid,),
-        ).fetchone()
-    if not row:
-        return None
-    return (row[0], float(row[1]), row[2])
-
-
 def pantry_used_add_back(uid: str, qty_used: float) -> Optional[str]:
     """
-    When user taps "Brugt":
-      - subtract qty_used from pantry item
-      - delete row if qty <= 0
-      - return item text (so UI can add to shopping)
+    Brugt:
+      - træk qty_used fra pantry
+      - slet række hvis qty <= 0
+      - returnér text så UI kan tilføje den på indkøbslisten igen
     """
     if qty_used <= 0:
         qty_used = 1.0
 
     with _conn() as con:
         cur = con.cursor()
-
         row = cur.execute(
             "SELECT text, qty FROM pantry_items WHERE uid=?",
             (uid,),
         ).fetchone()
+
         if not row:
             return None
 
@@ -227,10 +196,7 @@ def pantry_used_add_back(uid: str, qty_used: float) -> Optional[str]:
         remaining = float(qty) - float(qty_used)
 
         if remaining > 0:
-            cur.execute(
-                "UPDATE pantry_items SET qty=? WHERE uid=?",
-                (remaining, uid),
-            )
+            cur.execute("UPDATE pantry_items SET qty=? WHERE uid=?", (remaining, uid))
         else:
             cur.execute("DELETE FROM pantry_items WHERE uid=?", (uid,))
 
