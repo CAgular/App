@@ -2,8 +2,8 @@ name: Ping Streamlit App
 
 on:
   schedule:
-    # Ping hver 30. minut
-    - cron: "*/30 * * * *"
+    # Ping hver 1. minut
+    - cron: "*/1 * * * *"
   workflow_dispatch: {}
 
 jobs:
