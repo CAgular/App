@@ -1,3 +1,4 @@
+# pages/Memories.py
 import os
 import streamlit as st
 
@@ -5,7 +6,9 @@ from src.app_state import init_app_state
 from src.config import APP_TITLE, DB_PATH, DB_DRIVE_NAME, PHOTOS_CACHE_DIR, ALLOWED_EXTS
 from src.storage import save_photo_locally, add_memory, fetch_recent, delete_memory
 from src.drive_media import upload_uploadedfile_to_drive, download_drive_file_to_cache, delete_drive_file
-from drive_sync import upload_or_update, FOLDER_ID
+
+import drive_sync  # <-- vigtigt (robust)
+
 
 st.set_page_config(page_title=f"{APP_TITLE} • Memories", page_icon="🏠", layout="centered")
 st.link_button("⬅️ Tilbage til forside", "/")
@@ -27,7 +30,6 @@ with st.expander("Drive sync status", expanded=False):
     else:
         st.success("Drive connected ✅")
         st.info("Downloaded latest database from Drive ✅" if downloaded_db else "No database found in Drive (or first run). Using local DB.")
-
 
 # -----------------------------
 # Add memory
@@ -73,7 +75,7 @@ with st.form("add_memory_form", clear_on_submit=True):
             photo_drive_name = None
             if drive is not None:
                 try:
-                    photo_drive_id, photo_drive_name = upload_uploadedfile_to_drive(drive, FOLDER_ID, uploaded)
+                    photo_drive_id, photo_drive_name = upload_uploadedfile_to_drive(drive, drive_sync.FOLDER_ID, uploaded)
                 except Exception as e:
                     st.warning(f"Saved locally, but failed to upload photo to Drive: {e}")
 
@@ -83,7 +85,7 @@ with st.form("add_memory_form", clear_on_submit=True):
             # 4) Sync DB til Drive
             if drive is not None:
                 try:
-                    upload_or_update(drive, FOLDER_ID, DB_PATH, DB_DRIVE_NAME)
+                    drive_sync.upload_or_update(drive, drive_sync.FOLDER_ID, DB_PATH, DB_DRIVE_NAME)
                 except Exception as e:
                     st.warning(f"Saved locally, but failed to sync DB to Drive: {e}")
 
@@ -91,7 +93,6 @@ with st.form("add_memory_form", clear_on_submit=True):
 
         finally:
             st.session_state["saving"] = False
-
 
 # -----------------------------
 # Helpers: cleanup photos
@@ -119,7 +120,6 @@ def cleanup_photos(photo_path, photo_drive_id, photo_drive_name):
     # Drive foto
     if drive is not None and photo_drive_id:
         delete_drive_file(drive, photo_drive_id)
-
 
 # -----------------------------
 # Recent memories + delete
@@ -158,7 +158,7 @@ else:
 
                             if drive is not None:
                                 try:
-                                    upload_or_update(drive, FOLDER_ID, DB_PATH, DB_DRIVE_NAME)
+                                    drive_sync.upload_or_update(drive, drive_sync.FOLDER_ID, DB_PATH, DB_DRIVE_NAME)
                                 except Exception as e:
                                     st.warning(f"Slettet lokalt, men kunne ikke sync DB til Drive: {e}")
 
