@@ -12,7 +12,6 @@ from src.storage_shopping import (
     delete_shopping,
     pop_shopping,
     pantry_add_or_merge,
-    pantry_set_location,
     pantry_used_add_back,
 )
 
@@ -72,6 +71,13 @@ def _fmt_qty(q: float) -> str:
     return str(int(q)) if q.is_integer() else str(q)
 
 
+def _sorted_categories(rows):
+    # rows: list of (uid,text,qty,category)
+    def key(c: str):
+        return ("zzzz" if c == "Ukategoriseret" else c.lower())
+    return sorted({(r[3] or "Ukategoriseret") for r in rows}, key=key)
+
+
 ss = st.session_state
 ss.setdefault("shopping_categories", [
     "Frugt & grønt",
@@ -85,20 +91,8 @@ ss.setdefault("shopping_categories", [
     "Ukategoriseret",
 ])
 
-ss.setdefault("pantry_locations", [
-    "Køleskab",
-    "Fryser",
-    "Bryggers",
-    "Skab",
-    "Badeværelse",
-    "Kælder",
-    "Garage",
-    "Ukategoriseret",
-])
-
-# Prompt for "Brugt"
+# prompt state for "Brugt"
 ss.setdefault("pantry_prompt_uid", None)
-ss.setdefault("pantry_prompt_qty_text", "1")
 
 tab_shop, tab_pantry = st.tabs(["Indkøbsliste", "Hjemme"])
 
@@ -106,21 +100,11 @@ tab_shop, tab_pantry = st.tabs(["Indkøbsliste", "Hjemme"])
 # TAB: Indkøbsliste
 # -----------------------------
 with tab_shop:
-    # Form: clear_on_submit => vi må IKKE manuelt sætte session_state for widget keys bagefter
+    # Tilføj vare (kompakt, mobilvenlig)
     with st.form("add_item_form", border=False, clear_on_submit=True):
         with st.container(horizontal=True, vertical_alignment="bottom"):
-            st.text_input(
-                "Vare",
-                label_visibility="collapsed",
-                placeholder="Tilføj vare…",
-                key="new_item_text",
-            )
-            st.text_input(
-                "Antal",
-                label_visibility="collapsed",
-                placeholder="Antal",
-                key="new_item_qty_text",
-            )
+            st.text_input("Vare", label_visibility="collapsed", placeholder="Tilføj vare…", key="new_item_text")
+            st.text_input("Antal", label_visibility="collapsed", placeholder="Antal", key="new_item_qty_text")
             st.selectbox(
                 "Kategori",
                 ss["shopping_categories"],
@@ -141,18 +125,19 @@ with tab_shop:
                 sync_db()
             st.rerun()
 
+    # Liste i bokse pr kategori
     rows = fetch_shopping()
     if not rows:
         st.info("Listen er tom.")
     else:
-        def cat_key(c: str):
-            return ("zzzz" if c == "Ukategoriseret" else c.lower())
+        for cat in _sorted_categories(rows):
+            group = [r for r in rows if (r[3] or "Ukategoriseret") == cat]
+            if not group:
+                continue
 
-        cats = sorted({(r[3] or "Ukategoriseret") for r in rows}, key=cat_key)
+            with st.container(border=True):
+                st.caption(cat)
 
-        with st.container(gap=None, border=True):
-            for cat in cats:
-                group = [r for r in rows if (r[3] or "Ukategoriseret") == cat]
                 for uid, text, qty, _cat in group:
                     with st.container(horizontal=True, vertical_alignment="center"):
                         st.markdown(f"{_fmt_qty(qty)} × {text}")
@@ -160,8 +145,8 @@ with tab_shop:
                         if st.button("Købt", key=f"shop_b_{uid}", type="secondary"):
                             popped = pop_shopping(uid)
                             if popped:
-                                t, q, _c = popped
-                                pantry_add_or_merge(t, q)
+                                t, q, c = popped
+                                pantry_add_or_merge(t, q, c)  # samme kategori som i indkøbslisten
                                 sync_db()
                             st.rerun()
 
@@ -170,75 +155,84 @@ with tab_shop:
                             sync_db()
                             st.rerun()
 
+
 # -----------------------------
 # TAB: Hjemme
 # -----------------------------
 with tab_pantry:
+    # Tilføj direkte i Hjemme (rester til fryseren osv.)
+    st.caption("Tilføj direkte til det du har derhjemme")
+    with st.form("add_pantry_form", border=False, clear_on_submit=True):
+        with st.container(horizontal=True, vertical_alignment="bottom"):
+            st.text_input("Vare", label_visibility="collapsed", placeholder="Tilføj til hjemme…", key="pantry_new_text")
+            st.text_input("Antal", label_visibility="collapsed", placeholder="Antal", key="pantry_new_qty")
+            st.selectbox(
+                "Kategori",
+                ss["shopping_categories"],
+                index=ss["shopping_categories"].index("Ukategoriseret")
+                if "Ukategoriseret" in ss["shopping_categories"]
+                else 0,
+                key="pantry_new_cat",
+                label_visibility="collapsed",
+            )
+            submitted_pantry = st.form_submit_button("Tilføj", icon=":material/add:")
+
+        if submitted_pantry:
+            text = (ss.get("pantry_new_text") or "").strip()
+            if text:
+                qty = _parse_qty(ss.get("pantry_new_qty"))
+                cat = (ss.get("pantry_new_cat") or "Ukategoriseret").strip() or "Ukategoriseret"
+                pantry_add_or_merge(text, qty, cat)
+                sync_db()
+            st.rerun()
+
+    # Prompt for "Brugt" (fixer session_state-fejlen ved at bruge form)
     prompt_uid = ss.get("pantry_prompt_uid")
     if prompt_uid:
         with st.container(border=True):
             st.markdown("**Tilføj til indkøbslisten igen?**")
-            c1, c2, c3 = st.columns([0.5, 0.25, 0.25], gap="small")
-            with c1:
-                st.text_input(
-                    "Antal",
-                    label_visibility="collapsed",
-                    placeholder="Antal",
-                    key="pantry_prompt_qty_text",
-                )
-            with c2:
-                if st.button("Ja", type="primary", key="pantry_yes"):
-                    qty_used = _parse_qty(ss.get("pantry_prompt_qty_text"))
-                    text = pantry_used_add_back(prompt_uid, qty_used)
-                    if text:
-                        add_shopping(text=text, qty=qty_used, category="Ukategoriseret")
+
+            # unikt form-key per prompt_uid så clear_on_submit altid virker rent
+            with st.form(f"used_prompt_form_{prompt_uid}", clear_on_submit=True, border=False):
+                c1, c2, c3 = st.columns([0.5, 0.25, 0.25], gap="small")
+                with c1:
+                    st.text_input("Antal", label_visibility="collapsed", placeholder="Antal", key=f"used_qty_{prompt_uid}")
+                with c2:
+                    yes = st.form_submit_button("Ja")
+                with c3:
+                    no = st.form_submit_button("Nej")
+
+                if yes:
+                    qty_used = _parse_qty(ss.get(f"used_qty_{prompt_uid}"))
+                    result = pantry_used_add_back(prompt_uid, qty_used)
+                    if result:
+                        text, cat = result
+                        add_shopping(text=text, qty=qty_used, category=cat)  # samme kategori
                         sync_db()
                     ss["pantry_prompt_uid"] = None
-                    ss["pantry_prompt_qty_text"] = "1"
-                    st.rerun()
-            with c3:
-                if st.button("Nej", type="tertiary", key="pantry_no"):
-                    ss["pantry_prompt_uid"] = None
-                    ss["pantry_prompt_qty_text"] = "1"
                     st.rerun()
 
+                if no:
+                    ss["pantry_prompt_uid"] = None
+                    st.rerun()
+
+    # Hjemme-liste i bokse pr kategori
     pantry_rows = fetch_pantry()
     if not pantry_rows:
         st.info("Ingen varer registreret derhjemme endnu.")
     else:
-        def loc_key(x: str):
-            return ("zzzz" if x == "Ukategoriseret" else x.lower())
+        for cat in _sorted_categories(pantry_rows):
+            group = [r for r in pantry_rows if (r[3] or "Ukategoriseret") == cat]
+            if not group:
+                continue
 
-        locs = sorted({(r[3] or "Ukategoriseret") for r in pantry_rows}, key=loc_key)
+            with st.container(border=True):
+                st.caption(cat)
 
-        with st.container(gap=None, border=True):
-            for loc in locs:
-                group = [r for r in pantry_rows if (r[3] or "Ukategoriseret") == loc]
-                if not group:
-                    continue
-
-                st.caption(loc)
-
-                for uid, text, qty, location in group:
+                for uid, text, qty, _cat in group:
                     with st.container(horizontal=True, vertical_alignment="center"):
                         st.markdown(f"{_fmt_qty(qty)} × {text}")
 
-                        sel_key = f"loc_{uid}"
-                        if sel_key not in ss:
-                            ss[sel_key] = location if location in ss["pantry_locations"] else "Ukategoriseret"
-
-                        new_loc = st.selectbox(
-                            "Placering",
-                            options=ss["pantry_locations"],
-                            key=sel_key,
-                            label_visibility="collapsed",
-                        )
-                        if new_loc != location:
-                            pantry_set_location(uid=uid, text=text, location=new_loc)
-                            sync_db()
-                            st.rerun()
-
                         if st.button("Brugt", key=f"used_{uid}", type="secondary"):
                             ss["pantry_prompt_uid"] = uid
-                            ss["pantry_prompt_qty_text"] = "1"
                             st.rerun()
