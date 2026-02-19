@@ -16,6 +16,7 @@ from src.storage_shopping import (
     pantry_add_or_merge,
     get_pantry_item,
     pantry_consume,
+    pantry_move_category,
     get_textkeys_in_pantry,
     get_textkeys_in_shopping,
 )
@@ -208,11 +209,9 @@ with tab_pantry:
         info = get_pantry_item(prompt_uid)  # (text, qty, category, is_std)
         if info:
             p_text, p_qty, p_cat, p_std = info
-            # Default qty in prompt must match pantry qty:
             default_key = f"used_qty_{prompt_uid}"
             if default_key not in ss:
-                # This is before widget is created in this run -> safe
-                ss[default_key] = _fmt_qty(p_qty)
+                ss[default_key] = _fmt_qty(p_qty)  # default = samme antal som i hjemme
 
             with st.container(border=True):
                 st.markdown(f"**Brugt: {p_text}** ({_fmt_qty(p_qty)} ×)  \nTilføj til indkøbslisten igen?")
@@ -220,12 +219,7 @@ with tab_pantry:
                 with st.form(f"used_prompt_form_{prompt_uid}", clear_on_submit=True, border=False):
                     c1, c2, c3 = st.columns([0.5, 0.25, 0.25], gap="small")
                     with c1:
-                        st.text_input(
-                            "Antal",
-                            label_visibility="collapsed",
-                            placeholder="Antal",
-                            key=default_key,
-                        )
+                        st.text_input("Antal", label_visibility="collapsed", placeholder="Antal", key=default_key)
                     with c2:
                         yes = st.form_submit_button("Ja")
                     with c3:
@@ -234,7 +228,6 @@ with tab_pantry:
                     qty_used = _parse_qty(ss.get(default_key))
 
                     if yes:
-                        # Consume, then add back to shopping (same category)
                         res = pantry_consume(prompt_uid, qty_used)
                         if res:
                             t, c, is_std = res
@@ -243,19 +236,16 @@ with tab_pantry:
                                 upsert_standard(text=t, category=c, default_qty=qty_used)
                             sync_db()
                         ss["pantry_prompt_uid"] = None
-                        # don't touch default_key after widget; it will be cleared by clear_on_submit
                         st.rerun()
 
                     if no:
-                        # Consume, and DO NOT add to shopping. If default qty==full qty, it deletes from pantry.
+                        # Forbrug varen og tilføj ikke til indkøbslisten
                         res = pantry_consume(prompt_uid, qty_used)
                         if res:
-                            # still keep standard catalog if it was standard (no update required)
                             sync_db()
                         ss["pantry_prompt_uid"] = None
                         st.rerun()
         else:
-            # Item disappeared
             ss["pantry_prompt_uid"] = None
 
     pantry_rows = fetch_pantry()  # (uid, text, qty, category, is_standard)
@@ -275,47 +265,77 @@ with tab_pantry:
                     with st.container(horizontal=True, vertical_alignment="center"):
                         st.markdown(label)
 
+                        # Hurtig flyt til Frost
+                        if _cat != "Frost":
+                            if st.button("→ Frost", key=f"to_frost_{uid}", type="tertiary"):
+                                changed = pantry_move_category(uid, "Frost")
+                                if changed:
+                                    sync_db()
+                                st.rerun()
+
                         if st.button("Brugt", key=f"used_{uid}", type="secondary"):
-                            # set prompt and set default qty BEFORE widget exists next run
                             ss["pantry_prompt_uid"] = uid
-                            ss[f"used_qty_{uid}"] = _fmt_qty(qty)
+                            ss[f"used_qty_{uid}"] = _fmt_qty(qty)  # default qty = samme som vist
                             st.rerun()
 
     # -----------------------------
-    # Standardvarer boks nederst
+    # Standardvarer boks nederst (forslag 3)
     # -----------------------------
     standards = fetch_standards()  # (text, category, default_qty)
     if standards:
         pantry_keys = get_textkeys_in_pantry()
         shopping_keys = get_textkeys_in_shopping()
 
+        missing = []
+        present = []
+        for text, cat, default_qty in standards:
+            k = (text or "").strip().lower()
+            in_home = k in pantry_keys
+            in_shop = k in shopping_keys
+
+            if in_home and in_shop:
+                status = "✅ Hjemme • 🛒 På liste"
+            elif in_home:
+                status = "✅ Hjemme"
+            elif in_shop:
+                status = "🛒 På liste"
+            else:
+                status = "⚠️ Mangler"
+
+            row = (text, cat, default_qty, k, in_shop, status)
+            if status == "⚠️ Mangler":
+                missing.append(row)
+            else:
+                present.append(row)
+
         st.divider()
         with st.container(border=True):
             st.subheader("⭐ Standardvarer")
 
-            for text, cat, default_qty in standards:
-                k = (text or "").strip().lower()
-                in_home = k in pantry_keys
-                in_shop = k in shopping_keys
+            if missing:
+                st.markdown("**⚠️ Mangler**")
+                for text, cat, default_qty, k, in_shop, status in missing:
+                    left, right = st.columns([4, 1], vertical_alignment="center")
+                    with left:
+                        st.markdown(f"**{text}**  \n:small[{cat} • {status}]")
+                    with right:
+                        if st.button("Tilføj", key=f"std_add_missing_{k}"):
+                            add_shopping(text=text, qty=default_qty, category=cat, is_standard=1)
+                            sync_db()
+                            st.rerun()
 
-                if in_home and in_shop:
-                    status = "✅ Hjemme • 🛒 På liste"
-                elif in_home:
-                    status = "✅ Hjemme"
-                elif in_shop:
-                    status = "🛒 På liste"
-                else:
-                    status = "⚠️ Mangler"
+                st.markdown("---")
 
+            st.markdown("**Resten**")
+            for text, cat, default_qty, k, in_shop, status in present:
                 left, right = st.columns([4, 1], vertical_alignment="center")
                 with left:
                     st.markdown(f"**{text}**  \n:small[{cat} • {status}]")
-
                 with right:
                     disabled = in_shop
                     if st.button(
                         "Tilføj",
-                        key=f"std_add_{k}",
+                        key=f"std_add_present_{k}",
                         disabled=disabled,
                         help="Tilføj direkte til indkøbslisten" if not disabled else "Allerede på indkøbslisten",
                     ):
