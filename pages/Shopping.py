@@ -30,6 +30,7 @@ from src.storage_shopping import (
     set_recipe_done,
     recipe_add_or_merge,
     update_recipe_item_qty,
+    add_shopping_from_recipe,   # <-- NEW
     # meal plan
     set_meal_for_date,
     clear_meal_for_date,
@@ -151,7 +152,6 @@ tab_shop, tab_pantry, tab_menu, tab_recipes = st.tabs(["Indkøbsliste", "Hjemme"
 # TAB: Indkøbsliste
 # -----------------------------
 with tab_shop:
-    # Kladder til dropdown (opdateres hver rerun)
     draft_recipes = fetch_recipes(done=0)  # [(uid,name,is_done)]
     draft_options = [""] + [uid for uid, _, _ in draft_recipes]
     draft_name = {uid: name for uid, name, _ in draft_recipes}
@@ -193,21 +193,18 @@ with tab_shop:
                 is_std = 1 if ss.get("new_item_std") else 0
                 recipe_uid = ss.get("new_item_recipe_uid") or ""
 
-                # 1) til indkøbslisten
                 add_shopping(text=text, qty=qty, category=cat, is_standard=is_std)
 
-                # 2) til opskrift (kladde) med samme kategori
                 if recipe_uid:
                     recipe_add_or_merge(recipe_uid, text, qty, cat, is_standard=is_std)
 
-                # 3) standard
                 if is_std:
                     upsert_standard(text=text, category=cat, default_qty=qty)
 
                 sync_db()
                 st.rerun()
 
-    rows = fetch_shopping()  # (uid,text,qty,cat,is_std)
+    rows = fetch_shopping()
     if not rows:
         st.info("Listen er tom.")
     else:
@@ -279,7 +276,6 @@ with tab_pantry:
                 sync_db()
                 st.rerun()
 
-    # Prompt when clicking "Brugt"
     prompt_uid = ss.get("pantry_prompt_uid")
     if prompt_uid:
         info = get_pantry_item(prompt_uid)
@@ -335,60 +331,12 @@ with tab_pantry:
                 for uid, text, qty, _cat, is_std in group:
                     with st.container(horizontal=True, vertical_alignment="center"):
                         st.markdown(f"{_fmt_qty(qty)} × {text}")
-
-                        star_label = "⭐" if is_std else "☆"
-                        if st.button(star_label, key=f"pantry_star_{uid}", type="tertiary", help="Toggle standardvare", width="content"):
-                            new_std = 0 if is_std else 1
-                            info2 = set_pantry_standard(uid, new_std)
-                            if info2:
-                                t, c, q = info2
-                                if new_std == 1:
-                                    upsert_standard(t, c, q)
-                                else:
-                                    delete_standard(t)
-                            sync_db()
-                            st.rerun()
-
                         if _cat != "Frost":
                             if st.button("→ Frost", key=f"to_frost_{uid}", type="tertiary", width="content"):
                                 changed = pantry_move_category(uid, "Frost")
                                 if changed:
                                     sync_db()
                                     st.rerun()
-
-                        if st.button("Brugt", key=f"used_{uid}", type="secondary", width="content"):
-                            ss["pantry_prompt_uid"] = uid
-                            ss[f"used_qty_{uid}"] = _fmt_qty(qty)
-                            st.rerun()
-
-    # Standardvarer (minimal)
-    standards = fetch_standards()
-    shopping_rows_now = fetch_shopping()
-    pantry_textkeys = {t.strip().lower() for (_, t, _, _, _) in pantry_rows} if pantry_rows else set()
-    shopping_textkeys = {t.strip().lower() for (_, t, _, _, _) in shopping_rows_now} if shopping_rows_now else set()
-
-    if standards:
-        missing = []
-        for text, cat, default_qty in standards:
-            k = (text or "").strip().lower()
-            in_home = k in pantry_textkeys
-            in_shop = k in shopping_textkeys
-            if not in_home and not in_shop:
-                missing.append((text, cat, default_qty, k))
-
-        if missing:
-            st.divider()
-            with st.container(border=True):
-                st.subheader("⭐ Standardvarer • Mangler")
-                for text, cat, default_qty, k in missing:
-                    left, right = st.columns([4, 1], vertical_alignment="center")
-                    with left:
-                        st.markdown(f"**{text}**  \n:small[{cat}]")
-                    with right:
-                        if st.button("Tilføj", key=f"std_add_missing_{k}", width="content"):
-                            add_shopping(text=text, qty=default_qty, category=cat, is_standard=1)
-                            sync_db()
-                            st.rerun()
 
 # -----------------------------
 # TAB: Ugemenu (kun færdige opskrifter)
@@ -403,7 +351,7 @@ with tab_menu:
     week_from = _iso(week_dates[0])
     week_to = _iso(week_dates[-1])
 
-    done_recipes = fetch_recipes(done=1)  # (uid,name,is_done)
+    done_recipes = fetch_recipes(done=1)
     recipe_name_by_uid = {uid: name for uid, name, _ in done_recipes}
     recipe_uids = [""] + [uid for uid, _, _ in done_recipes]
 
@@ -432,42 +380,24 @@ with tab_menu:
                     label_visibility="collapsed",
                 )
             with row_cols[2]:
-                st.text_input("Titel", value=(title or ""), key=f"mp_title_{d_str}", label_visibility="collapsed", placeholder="(valgfri)")
+                st.text_input("Titel", value=(title or ""), key=f"mp_title_{d_str}", label_visibility="collapsed")
             with row_cols[3]:
-                st.text_input(
-                    "Antal",
-                    value=str(int(servings)) if float(servings).is_integer() else str(servings),
-                    key=f"mp_serv_{d_str}",
-                    label_visibility="collapsed",
-                    placeholder="1",
-                )
-
-            st.text_input(f"Note {d_str}", value=(note or ""), key=f"mp_note_{d_str}", label_visibility="collapsed", placeholder="Note (valgfri)…")
+                st.text_input("Antal", value=str(servings), key=f"mp_serv_{d_str}", label_visibility="collapsed")
 
             bcols = st.columns([1, 1, 6], vertical_alignment="center")
             with bcols[0]:
                 if st.button("Gem", key=f"mp_save_{d_str}", type="secondary", width="content"):
-                    raw = (ss.get(f"mp_serv_{d_str}") or "").strip().replace(",", ".")
-                    try:
-                        s = float(raw) if raw else 1.0
-                    except Exception:
-                        s = 1.0
-                    s = 1.0 if s <= 0 else s
-
+                    s = _parse_qty(ss.get(f"mp_serv_{d_str}"))
                     t = (ss.get(f"mp_title_{d_str}") or "").strip()
-                    n = (ss.get(f"mp_note_{d_str}") or "").strip()
                     cu = chosen_uid if chosen_uid != "" else None
-
                     if cu is None and not t:
                         clear_meal_for_date(d_str)
                     else:
                         if cu is not None and not t:
                             t = recipe_name_by_uid.get(cu, "")
-                        set_meal_for_date(d_str, cu, t, servings=s, note=n)
-
+                        set_meal_for_date(d_str, cu, t, servings=s, note="")
                     sync_db()
                     st.rerun()
-
             with bcols[1]:
                 if st.button("Ryd", key=f"mp_clear_{d_str}", type="tertiary", width="content"):
                     clear_meal_for_date(d_str)
@@ -497,12 +427,7 @@ with tab_recipes:
 
     tab_drafts, tab_done = st.tabs(["📝 Ikke færdige", "✅ Færdige"])
 
-    # -----------------------------
-    # Drafts
-    # -----------------------------
     with tab_drafts:
-        st.caption("Tilføj ingredienser via dropdown i indkøbslisten – eller tilføj fra Indkøb/Hjemme herunder.")
-
         with st.form("new_recipe_form", border=False, clear_on_submit=True):
             c1, c2 = st.columns([3, 1], vertical_alignment="bottom")
             with c1:
@@ -516,7 +441,7 @@ with tab_recipes:
                     sync_db()
                     st.rerun()
 
-        drafts = fetch_recipes(done=0)  # (uid,name,is_done)
+        drafts = fetch_recipes(done=0)
         if not drafts:
             st.info("Ingen kladder endnu.")
         else:
@@ -524,60 +449,7 @@ with tab_recipes:
             rnames = {uid: name for uid, name, _ in drafts}
             chosen = st.selectbox("Vælg kladde", options=ruids, format_func=lambda u: rnames.get(u, u), key="draft_choice")
 
-            # -------- NEW: Add from Shopping / Pantry while editing draft --------
-            with st.expander("➕ Tilføj varer fra Indkøbsliste / Hjemme", expanded=False):
-                ss.setdefault("draft_add_source", "Indkøbsliste")
-                ss.setdefault("draft_add_search", "")
-
-                src = st.segmented_control(
-                    "Kilde",
-                    options=["Indkøbsliste", "Hjemme"],
-                    default=ss["draft_add_source"],
-                    key="draft_add_source",
-                )
-                q = st.text_input("Søg vare", key="draft_add_search", placeholder="Skriv for at filtrere…")
-
-                if src == "Indkøbsliste":
-                    source_rows = fetch_shopping()  # (uid,text,qty,cat,is_std)
-                    options = [(uid, text, qty, cat, is_std) for (uid, text, qty, cat, is_std) in source_rows if _name_match(text, q)]
-                    label = "Vælg vare fra indkøbslisten"
-                else:
-                    source_rows = fetch_pantry()  # (uid,text,qty,cat,is_std)
-                    options = [(uid, text, qty, cat, is_std) for (uid, text, qty, cat, is_std) in source_rows if _name_match(text, q)]
-                    label = "Vælg vare fra hjemme"
-
-                if not options:
-                    st.info("Ingen varer matcher søgningen.")
-                else:
-                    opt_ids = [o[0] for o in options]
-                    opt_map = {o[0]: o for o in options}
-
-                    picked_uid = st.selectbox(
-                        label,
-                        options=opt_ids,
-                        format_func=lambda u: f"{_fmt_qty(opt_map[u][2])} × {opt_map[u][1]}  ({opt_map[u][3]})",
-                        key="draft_add_pick_uid",
-                    )
-
-                    _uid, p_text, p_qty, p_cat, p_std = opt_map[picked_uid]
-
-                    # Default qty = qty from source, but allow quick override
-                    qty_str = st.text_input(
-                        "Antal (valgfrit)",
-                        key="draft_add_qty_override",
-                        value=_fmt_qty(p_qty),
-                        help="Default er antal fra listen. Du kan ændre før tilføj.",
-                    )
-                    add_now = st.button("Tilføj til opskrift", type="primary", width="stretch", key="draft_add_btn")
-                    if add_now:
-                        q_add = _parse_qty(qty_str)
-                        # category EXACTLY as it was when added to shopping/pantry
-                        recipe_add_or_merge(chosen, p_text, q_add, p_cat, is_standard=int(p_std or 0))
-                        sync_db()
-                        st.success(f"Tilføjet: {p_text}")
-                        st.rerun()
-
-            items = fetch_recipe_items(chosen)  # (uid,text,qty,cat,is_std)
+            items = fetch_recipe_items(chosen)
 
             a1, a2, a3 = st.columns([1, 1, 3], vertical_alignment="center")
             with a1:
@@ -594,7 +466,7 @@ with tab_recipes:
                 st.caption("Her kan du justere mængder (mobilvenligt).")
 
             if not items:
-                st.info("Ingen ingredienser endnu. Tilføj varer via indkøbslisten-dropdown eller via boksen ovenfor.")
+                st.info("Ingen ingredienser endnu. Tilføj via indkøbslisten-dropdown.")
             else:
                 for item_uid, text, qty, cat, is_std in items:
                     with st.container(border=True):
@@ -621,10 +493,10 @@ with tab_recipes:
                             st.rerun()
 
     # -----------------------------
-    # Finished
+    # Finished: add-to-shopping (missing home)
     # -----------------------------
     with tab_done:
-        done = fetch_recipes(done=1)  # (uid,name,is_done)
+        done = fetch_recipes(done=1)
         if not done:
             st.info("Ingen færdige opskrifter endnu.")
         else:
@@ -632,21 +504,31 @@ with tab_recipes:
             rnames = {uid: name for uid, name, _ in done}
             chosen = st.selectbox("Vælg færdig opskrift", options=ruids, format_func=lambda u: rnames.get(u, u), key="done_choice")
 
-            items = fetch_recipe_items(chosen)
-
-            a1, a2, a3 = st.columns([1, 1, 3], vertical_alignment="center")
-            with a1:
-                if st.button("Slet", type="tertiary", key="delete_done_btn", width="content"):
-                    delete_recipe(chosen)
+            # NEW controls
+            c1, c2, c3 = st.columns([1.2, 1.2, 2.6], vertical_alignment="center")
+            with c1:
+                st.text_input("Antal", key="done_add_multiplier", value="1", label_visibility="collapsed")
+            with c2:
+                only_missing = st.checkbox("Kun mangler hjemme", value=True, key="done_only_missing")
+            with c3:
+                if st.button("🛒 Tilføj til indkøbslisten", type="primary", width="stretch", key="done_add_to_shop_btn"):
+                    m = _parse_qty(ss.get("done_add_multiplier"))
+                    summary = add_shopping_from_recipe(chosen, multiplier=m, check_pantry_first=bool(only_missing))
                     sync_db()
+                    st.success(f"Tilføjet {summary.get('added',0)} vare(r). Sprunget over (hjemme): {summary.get('skipped_home',0)}.")
                     st.rerun()
-            with a2:
+
+            items = fetch_recipe_items(chosen)
+            st.divider()
+
+            a1, a2 = st.columns([1, 3], vertical_alignment="center")
+            with a1:
                 if st.button("Gør til kladde", type="secondary", key="mark_draft_btn", width="content"):
                     set_recipe_done(chosen, 0)
                     sync_db()
                     st.rerun()
-            with a3:
-                st.caption("Færdige opskrifter kan bruges i ugemenuen.")
+            with a2:
+                st.caption("Færdige opskrifter kan bruges i ugemenuen og tilføjes til indkøb.")
 
             if not items:
                 st.info("Ingen ingredienser.")
