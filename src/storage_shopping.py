@@ -56,7 +56,7 @@ def init_shopping_tables() -> None:
     """
     )
 
-    # Create minimal pantry (safe for migrations)
+    # create minimal pantry (safe for migrations)
     cur.execute(
         """
     CREATE TABLE IF NOT EXISTS pantry_items (
@@ -195,6 +195,9 @@ def upsert_standard(text: str, category: str, default_qty: float = 1.0) -> None:
 
 
 def delete_standard(text: str) -> None:
+    """
+    Remove a standard from catalog and also clear is_standard flags on matching rows.
+    """
     k = _key(text)
     if not k:
         return
@@ -311,6 +314,10 @@ def pop_shopping(uid: str) -> Optional[Tuple[str, float, str, int]]:
 
 
 def set_shopping_standard(uid: str, is_standard: int) -> Optional[Tuple[str, str, float]]:
+    """
+    Toggle standard flag for a shopping row.
+    Returns (text, category, qty) for updating standard catalog.
+    """
     con = _conn()
     cur = con.cursor()
     row = cur.execute(
@@ -513,6 +520,10 @@ def update_recipe_item_qty(item_uid: str, qty: float) -> None:
 
 
 def recipe_add_or_merge(recipe_uid: str, text: str, qty: float, category: str, is_standard: int = 0) -> None:
+    """
+    Called when adding a shopping item and attaching it to a draft recipe.
+    Keeps category exactly as provided. Merges if same (lower(text), category) exists.
+    """
     text = (text or "").strip()
     if not text or not recipe_uid:
         return
@@ -586,6 +597,9 @@ def add_shopping_from_recipe(
 # Meal plan
 # -----------------------------
 def set_meal_for_date(day_date: str, recipe_uid: Optional[str], title: str, servings: float = 1.0, note: str = "") -> None:
+    """
+    Upsert a meal plan row for a specific date (YYYY-MM-DD).
+    """
     day_date = (day_date or "").strip()
     if not day_date:
         return
@@ -620,6 +634,10 @@ def clear_meal_for_date(day_date: str) -> None:
 
 
 def fetch_meal_plan(date_from: str, date_to: str) -> List[Tuple[str, Optional[str], str, float, str]]:
+    """
+    Returns rows for date range:
+    (day_date, recipe_uid, title, servings, note)
+    """
     con = _conn()
     rows = con.execute(
         """
@@ -641,6 +659,14 @@ def generate_shopping_from_mealplan(
     date_to: str,
     check_pantry_first: bool = True,
 ) -> Dict[str, int]:
+    """
+    Builds shopping list items from recipes used in meal plan in range.
+    - merges duplicates by (text_key, category)
+    - if check_pantry_first=True: skips items whose text_key exists in pantry (name match)
+    Adds items to shopping_items via add_shopping.
+
+    Returns: {"added": int, "skipped_home": int, "merged_items": int}
+    """
     pantry_keys = set()
     if check_pantry_first:
         pantry_rows = fetch_pantry()
