@@ -28,7 +28,6 @@ from src.storage_shopping import (
     add_recipe_item,
     delete_recipe_item,
     fetch_recipe_items,
-    set_recipe_item_standard,
     set_meal_for_date,
     clear_meal_for_date,
     fetch_meal_plan,
@@ -69,7 +68,7 @@ with st.expander("Drive sync status", expanded=False):
             drive_sync.upload_or_update(drive, drive_sync.FOLDER_ID, DB_PATH, DB_DRIVE_NAME)
             st.success("Synced ✅")
         except Exception as e:
-            st.warning(f"Kunne ikke sync'e: {e}")
+            st.warning(f"Kunke ikke sync'e: {e}")
 
 
 def sync_db():
@@ -114,6 +113,60 @@ def _iso(d: _dt.date) -> str:
     return d.isoformat()
 
 
+def _clean_cat(cat: str) -> str:
+    cat = (cat or "").strip()
+    if not cat:
+        return "Ukategoriseret"
+    if cat.lower() == "ukategoret":
+        return "Ukategoriseret"
+    return cat
+
+
+def _key(text: str) -> str:
+    return (text or "").strip().lower()
+
+
+def _sanitize_recipe_rows(rows, fallback_category="Ukategoriseret"):
+    """
+    Rens input ved gem:
+      - trim tekst
+      - qty => float >= 1
+      - kategori normaliseres
+      - tomme rækker fjernes
+    Return: list of dict {text, qty, cat, is_std}
+    """
+    out = []
+    for r in rows or []:
+        text = (r.get("Vare") or "").strip()
+        if not text:
+            continue
+
+        qty = r.get("Mængde", 1.0)
+        try:
+            qty = float(qty) if qty is not None else 1.0
+        except Exception:
+            qty = 1.0
+        qty = 1.0 if qty <= 0 else qty
+
+        cat = _clean_cat(r.get("Kategori") or fallback_category)
+        is_std = 1 if bool(r.get("⭐")) else 0
+
+        out.append({"text": text, "qty": qty, "cat": cat, "is_std": is_std})
+    return out
+
+
+def _default_recipe_table(n: int = 8):
+    # Skabelonrækker
+    return [{"Vare": "", "Mængde": 1.0, "Kategori": "Ukategoriseret", "⭐": False} for _ in range(n)]
+
+
+def _name_match(name: str, q: str) -> bool:
+    q = (q or "").strip().lower()
+    if not q:
+        return True
+    return q in (name or "").strip().lower()
+
+
 ss.setdefault(
     "shopping_categories",
     [
@@ -129,7 +182,7 @@ ss.setdefault(
     ],
 )
 
-tab_shop, tab_pantry, tab_menu = st.tabs(["Indkøbsliste", "Hjemme", "Ugemenu"])
+tab_shop, tab_pantry, tab_menu, tab_recipes = st.tabs(["Indkøbsliste", "Hjemme", "Ugemenu", "Opskrifter"])
 
 # -----------------------------
 # TAB: Indkøbsliste
@@ -155,7 +208,7 @@ with tab_shop:
             text = (ss.get("new_item_text") or "").strip()
             if text:
                 qty = _parse_qty(ss.get("new_item_qty_text"))
-                cat = (ss.get("new_item_cat") or "Ukategoriseret").strip() or "Ukategoriseret"
+                cat = _clean_cat(ss.get("new_item_cat") or "Ukategoriseret")
                 is_std = 1 if ss.get("new_item_std") else 0
                 add_shopping(text=text, qty=qty, category=cat, is_standard=is_std)
                 if is_std:
@@ -163,7 +216,7 @@ with tab_shop:
                 sync_db()
                 st.rerun()
 
-    rows = fetch_shopping()  # (uid,text,qty,cat,is_std)
+    rows = fetch_shopping()
     if not rows:
         st.info("Listen er tom.")
     else:
@@ -177,14 +230,8 @@ with tab_shop:
                     with st.container(horizontal=True, vertical_alignment="center"):
                         st.markdown(f"{_fmt_qty(qty)} × {text}")
 
-                        # ⭐ toggle (remove / add standard)
                         star_label = "⭐" if is_std else "☆"
-                        if st.button(
-                            star_label,
-                            key=f"shop_star_{uid}",
-                            type="tertiary",
-                            help="Toggle standardvare",
-                        ):
+                        if st.button(star_label, key=f"shop_star_{uid}", type="tertiary", help="Toggle standardvare"):
                             new_std = 0 if is_std else 1
                             info = set_shopping_standard(uid, new_std)
                             if info:
@@ -192,7 +239,6 @@ with tab_shop:
                                 if new_std == 1:
                                     upsert_standard(t, c, q)
                                 else:
-                                    # removing standard removes it from catalog
                                     delete_standard(t)
                             sync_db()
                             st.rerun()
@@ -236,7 +282,7 @@ with tab_pantry:
             text = (ss.get("pantry_new_text") or "").strip()
             if text:
                 qty = _parse_qty(ss.get("pantry_new_qty"))
-                cat = (ss.get("pantry_new_cat") or "Ukategoriseret").strip() or "Ukategoriseret"
+                cat = _clean_cat(ss.get("pantry_new_cat") or "Ukategoriseret")
                 is_std = 1 if ss.get("pantry_new_std") else 0
                 pantry_add_or_merge(text, qty, cat, is_standard=is_std)
                 if is_std:
@@ -244,10 +290,9 @@ with tab_pantry:
                 sync_db()
                 st.rerun()
 
-    # Prompt when clicking "Brugt"
     prompt_uid = ss.get("pantry_prompt_uid")
     if prompt_uid:
-        info = get_pantry_item(prompt_uid)  # (text, qty, cat, is_std)
+        info = get_pantry_item(prompt_uid)
         if info:
             p_text, p_qty, p_cat, p_std = info
             default_key = f"used_qty_{prompt_uid}"
@@ -287,9 +332,7 @@ with tab_pantry:
         else:
             ss["pantry_prompt_uid"] = None
 
-    pantry_rows = fetch_pantry()  # (uid,text,qty,cat,is_std)
-
-    # Build sets for standard status without extra DB queries (speed)
+    pantry_rows = fetch_pantry()
     pantry_textkeys = {t.strip().lower() for (_, t, _, _, _) in pantry_rows} if pantry_rows else set()
     shopping_rows_now = fetch_shopping()
     shopping_textkeys = {t.strip().lower() for (_, t, _, _, _) in shopping_rows_now} if shopping_rows_now else set()
@@ -307,14 +350,8 @@ with tab_pantry:
                     with st.container(horizontal=True, vertical_alignment="center"):
                         st.markdown(f"{_fmt_qty(qty)} × {text}")
 
-                        # ⭐ toggle
                         star_label = "⭐" if is_std else "☆"
-                        if st.button(
-                            star_label,
-                            key=f"pantry_star_{uid}",
-                            type="tertiary",
-                            help="Toggle standardvare",
-                        ):
+                        if st.button(star_label, key=f"pantry_star_{uid}", type="tertiary", help="Toggle standardvare"):
                             new_std = 0 if is_std else 1
                             info2 = set_pantry_standard(uid, new_std)
                             if info2:
@@ -326,7 +363,6 @@ with tab_pantry:
                             sync_db()
                             st.rerun()
 
-                        # Quick move to Frost
                         if _cat != "Frost":
                             if st.button("→ Frost", key=f"to_frost_{uid}", type="tertiary"):
                                 changed = pantry_move_category(uid, "Frost")
@@ -339,11 +375,9 @@ with tab_pantry:
                             ss[f"used_qty_{uid}"] = _fmt_qty(qty)
                             st.rerun()
 
-    # Standard box (split missing / rest) – using already-built sets (speed)
-    standards = fetch_standards()  # (text, category, default_qty)
+    standards = fetch_standards()
     if standards:
-        missing = []
-        present = []
+        missing, present = [], []
         for text, cat, default_qty in standards:
             k = (text or "").strip().lower()
             in_home = k in pantry_textkeys
@@ -356,12 +390,8 @@ with tab_pantry:
                 status = "🛒 På liste"
             else:
                 status = "⚠️ Mangler"
-
             row = (text, cat, default_qty, k, in_shop, status)
-            if status == "⚠️ Mangler":
-                missing.append(row)
-            else:
-                present.append(row)
+            (missing if status == "⚠️ Mangler" else present).append(row)
 
         st.divider()
         with st.container(border=True):
@@ -378,7 +408,6 @@ with tab_pantry:
                             add_shopping(text=text, qty=default_qty, category=cat, is_standard=1)
                             sync_db()
                             st.rerun()
-
                 st.markdown("---")
 
             st.markdown("**Resten**")
@@ -399,29 +428,72 @@ with tab_pantry:
                         st.rerun()
 
 # -----------------------------
-# TAB: Ugemenu
+# TAB: Ugemenu (plan + generér + hurtigsæt)
 # -----------------------------
 with tab_menu:
     st.subheader("📅 Ugemenu")
 
-    # Week selector
     today = _dt.date.today()
-    week_start = st.date_input("Vælg uge (mandag)", value=_monday(today))
+    week_start = st.date_input("Vælg uge (mandag)", value=_monday(today), key="menu_week_start_input")
     week_start = _monday(week_start)
+    ss["menu_week_start_iso"] = _iso(week_start)  # bruges også i Opskrifter-fanen
+
     week_dates = [week_start + _dt.timedelta(days=i) for i in range(7)]
     week_from = _iso(week_dates[0])
     week_to = _iso(week_dates[-1])
 
-    # Recipes for dropdown
-    recipes = fetch_recipes()  # [(uid,name)]
-    recipe_name_by_uid = {uid: name for uid, name in recipes}
-    recipe_uids = [""] + [uid for uid, _ in recipes]
+    all_recipes = fetch_recipes()
+    recipe_name_by_uid = {uid: name for uid, name in all_recipes}
 
-    # Existing plan
+    # Hurtigsøg i opskrifter (i ugemenu)
+    ss.setdefault("menu_recipe_search", "")
+    q = st.text_input("Søg opskrift", value=ss["menu_recipe_search"], placeholder="Søg…", key="menu_recipe_search")
+    filtered = [(uid, name) for uid, name in all_recipes if _name_match(name, q)]
+    recipe_uids = [""] + [uid for uid, _ in filtered]
+
+    # Hurtigsæt-panel (1 klik)
+    with st.container(border=True):
+        st.markdown("### ⚡ Hurtigsæt")
+        c1, c2, c3, c4 = st.columns([1.4, 2.4, 1.0, 1.2], vertical_alignment="center")
+
+        with c1:
+            day_labels = [d.strftime("%a %d/%m") for d in week_dates]
+            day_idx = st.selectbox("Dag", options=list(range(7)), format_func=lambda i: day_labels[i], key="quick_day", label_visibility="collapsed")
+        with c2:
+            quick_uid = st.selectbox(
+                "Opskrift",
+                options=recipe_uids,
+                format_func=lambda u: ("— vælg opskrift —" if u == "" else recipe_name_by_uid.get(u, u)),
+                key="quick_recipe_uid",
+                label_visibility="collapsed",
+            )
+        with c3:
+            st.text_input("Antal", key="quick_servings", value="1", label_visibility="collapsed", placeholder="1")
+        with c4:
+            if st.button("Sæt", type="primary", use_container_width=True, key="quick_set_btn"):
+                if quick_uid == "":
+                    st.warning("Vælg en opskrift.")
+                else:
+                    raw = (ss.get("quick_servings") or "").strip().replace(",", ".")
+                    try:
+                        servings = float(raw) if raw else 1.0
+                    except Exception:
+                        servings = 1.0
+                    servings = 1.0 if servings <= 0 else servings
+
+                    d = week_dates[int(ss.get("quick_day", 0))]
+                    d_str = _iso(d)
+                    title = recipe_name_by_uid.get(quick_uid, "")
+                    set_meal_for_date(d_str, quick_uid, title, servings=servings, note="")
+                    sync_db()
+                    st.success(f"Satte **{title}** på {d.strftime('%a %d/%m')}.")
+                    st.rerun()
+
+    # Eksisterende plan
     plan_rows = fetch_meal_plan(week_from, week_to)
     plan_by_date = {d: (ruid, title, servings, note) for (d, ruid, title, servings, note) in plan_rows}
 
-    st.caption("Planlæg 7 dage. Vælg en opskrift eller skriv en titel (fx 'Rester').")
+    st.caption("Planlæg 7 dage. Brug hurtigsæt eller redigér manuelt nedenfor.")
 
     with st.container(border=True):
         for d in week_dates:
@@ -434,10 +506,12 @@ with tab_menu:
 
             with row_cols[1]:
                 current_uid = ruid or ""
-                idx = recipe_uids.index(current_uid) if current_uid in recipe_uids else 0
+                # dropdown viser kun filtrerede opskrifter hvis der søges, ellers alle
+                options_all = [""] + [uid for uid, _ in all_recipes] if not q.strip() else recipe_uids
+                idx = options_all.index(current_uid) if current_uid in options_all else 0
                 chosen_uid = st.selectbox(
                     "Opskrift",
-                    options=recipe_uids,
+                    options=options_all,
                     format_func=lambda u: ("— vælg opskrift —" if u == "" else recipe_name_by_uid.get(u, u)),
                     index=idx,
                     key=f"mp_recipe_{d_str}",
@@ -484,11 +558,9 @@ with tab_menu:
                     n = (ss.get(f"mp_note_{d_str}") or "").strip()
                     cu = chosen_uid if chosen_uid != "" else None
 
-                    # If no recipe and no title -> clear
                     if cu is None and not t:
                         clear_meal_for_date(d_str)
                     else:
-                        # If recipe chosen and no title, auto title = recipe name
                         if cu is not None and not t:
                             t = recipe_name_by_uid.get(cu, "")
                         set_meal_for_date(d_str, cu, t, servings=s, note=n)
@@ -503,8 +575,6 @@ with tab_menu:
                     st.rerun()
 
     st.divider()
-
-    # Generate shopping list
     left, right = st.columns([2, 1], vertical_alignment="center")
     with left:
         check_home = st.checkbox("Tjek hjemme først (tilføj kun mangler)", value=True)
@@ -519,127 +589,232 @@ with tab_menu:
             )
             st.rerun()
 
-    st.divider()
-    st.subheader("📚 Opskriftsbibliotek")
+# -----------------------------
+# TAB: Opskrifter (UX + hurtigsøg + tilføj til ugemenu)
+# -----------------------------
+with tab_recipes:
+    st.subheader("📚 Opskriftbibliotek")
 
-    # Add recipe
-    with st.form("add_recipe_form", clear_on_submit=True, border=False):
-        c1, c2 = st.columns([3, 1], vertical_alignment="bottom")
-        with c1:
-            st.text_input(
-                "Ny opskrift",
-                key="new_recipe_name",
-                placeholder="Fx Chili con carne",
+    # Hurtigsøg
+    all_recipes = fetch_recipes()  # [(uid,name)]
+    ss.setdefault("recipe_search", "")
+    search = st.text_input("Hurtigsøg", value=ss["recipe_search"], placeholder="Søg opskrift…", key="recipe_search")
+    recipes = [(uid, name) for uid, name in all_recipes if _name_match(name, search)]
+    recipe_name_by_uid = {uid: name for uid, name in all_recipes}
+
+    # Ny opskrift (alt i én omgang)
+    with st.container(border=True):
+        st.markdown("### ➕ Ny opskrift")
+
+        ss.setdefault("new_recipe_name", "")
+        ss.setdefault("new_recipe_rows", _default_recipe_table(8))
+
+        top = st.columns([3, 1, 1], vertical_alignment="center")
+        with top[0]:
+            ss["new_recipe_name"] = st.text_input(
+                "Navn på ret",
+                value=ss["new_recipe_name"],
+                placeholder="Fx Lasagne",
                 label_visibility="collapsed",
+                key="new_recipe_name_input",
             )
-        with c2:
-            add_r = st.form_submit_button("Tilføj", icon=":material/add:")
-
-        if add_r:
-            name = (ss.get("new_recipe_name") or "").strip()
-            if name:
-                add_recipe(name)
-                sync_db()
+        with top[1]:
+            if st.button("+ 5 rækker", type="tertiary", key="new_recipe_add_rows"):
+                ss["new_recipe_rows"] = ss["new_recipe_rows"] + _default_recipe_table(5)
+                st.rerun()
+        with top[2]:
+            if st.button("Nulstil", type="tertiary", key="new_recipe_reset"):
+                ss["new_recipe_name"] = ""
+                ss["new_recipe_rows"] = _default_recipe_table(8)
                 st.rerun()
 
-    # Edit recipes
-    recipes = fetch_recipes()
-    if not recipes:
-        st.info("Ingen opskrifter endnu. Tilføj en øverst.")
-    else:
-        ruids = [uid for uid, _ in recipes]
-        rnames = {uid: n for uid, n in recipes}
-
-        chosen = st.selectbox(
-            "Vælg opskrift",
-            options=ruids,
-            format_func=lambda u: rnames.get(u, u),
-            key="recipe_edit_uid",
+        edited_rows = st.data_editor(
+            ss["new_recipe_rows"],
+            key="new_recipe_rows_editor",
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                "Vare": st.column_config.TextColumn(required=False),
+                "Mængde": st.column_config.NumberColumn(min_value=0.0, step=1.0),
+                "Kategori": st.column_config.SelectboxColumn(options=ss["shopping_categories"]),
+                "⭐": st.column_config.CheckboxColumn(help="Markér ingrediens som standardvare"),
+            },
         )
+        ss["new_recipe_rows"] = edited_rows
 
-        a1, a2 = st.columns([1, 3], vertical_alignment="center")
-        with a1:
-            if st.button("Slet opskrift", type="tertiary", key="delete_recipe_btn"):
-                delete_recipe(chosen)
-                sync_db()
-                st.rerun()
-        with a2:
-            st.caption("Tilføj ingredienser. ⭐ kan bruges til standardvarer.")
+        preview = _sanitize_recipe_rows(edited_rows)
+        if preview:
+            with st.expander("Preview (det der gemmes)", expanded=True):
+                for r in preview:
+                    st.markdown(f"- {_fmt_qty(r['qty'])} × **{r['text']}**  :small[{r['cat']}{' • ⭐' if r['is_std'] else ''}]")
+        else:
+            st.caption("Preview: ingen ingredienser endnu.")
 
-        items = fetch_recipe_items(chosen)
+        if st.button("Tilføj opskrift", type="primary", use_container_width=True, key="save_new_recipe_once"):
+            name = (ss.get("new_recipe_name") or "").strip()
+            if not name:
+                st.warning("Skriv et navn på retten.")
+            else:
+                ruid = add_recipe(name)
+                if not ruid:
+                    st.warning("Kunne ikke oprette opskriften.")
+                else:
+                    for r in preview:
+                        add_recipe_item(ruid, r["text"], r["qty"], r["cat"], is_standard=r["is_std"])
+                        if r["is_std"]:
+                            upsert_standard(text=r["text"], category=r["cat"], default_qty=r["qty"])
 
-        # Add ingredient
-        with st.form("add_recipe_item_form", clear_on_submit=True, border=False):
-            c1, c2, c3, c4, c5 = st.columns([2.5, 1, 1.5, 0.7, 1], vertical_alignment="bottom")
-            with c1:
-                st.text_input(
-                    "Ingrediens",
-                    key="ri_text",
-                    placeholder="Fx hakket oksekød",
-                    label_visibility="collapsed",
-                )
-            with c2:
-                st.text_input("Antal", key="ri_qty", placeholder="1", label_visibility="collapsed")
-            with c3:
-                st.selectbox(
-                    "Kategori",
-                    ss["shopping_categories"],
-                    index=ss["shopping_categories"].index("Ukategoriseret")
-                    if "Ukategoriseret" in ss["shopping_categories"]
-                    else 0,
-                    key="ri_cat",
-                    label_visibility="collapsed",
-                )
-            with c4:
-                st.checkbox("⭐", key="ri_std", help="Markér ingrediens som standardvare")
-            with c5:
-                add_i = st.form_submit_button("Tilføj", icon=":material/add:")
-
-            if add_i:
-                text = (ss.get("ri_text") or "").strip()
-                if text:
-                    raw = (ss.get("ri_qty") or "").strip().replace(",", ".")
-                    try:
-                        q = float(raw) if raw else 1.0
-                    except Exception:
-                        q = 1.0
-                    q = 1.0 if q <= 0 else q
-
-                    cat = (ss.get("ri_cat") or "Ukategoriseret").strip() or "Ukategoriseret"
-                    is_std = 1 if ss.get("ri_std") else 0
-
-                    add_recipe_item(chosen, text, q, cat, is_standard=is_std)
-                    if is_std:
-                        upsert_standard(text=text, category=cat, default_qty=q)
                     sync_db()
+                    ss["new_recipe_name"] = ""
+                    ss["new_recipe_rows"] = _default_recipe_table(8)
+                    st.success(f"Gemte opskrift: {name} ✅")
                     st.rerun()
 
-        if not items:
-            st.info("Ingen ingredienser endnu.")
+    st.divider()
+
+    if not all_recipes:
+        st.info("Ingen opskrifter endnu.")
+    else:
+        if not recipes:
+            st.warning("Ingen opskrifter matcher din søgning.")
         else:
-            for item_uid, text, qty, cat, is_std in items:
-                with st.container(horizontal=True, vertical_alignment="center"):
-                    st.markdown(f"{_fmt_qty(qty)} × {text}  \n:small[{cat}]")
+            ruids = [uid for uid, _ in recipes]
 
-                    star_label = "⭐" if is_std else "☆"
-                    if st.button(
-                        star_label,
-                        key=f"ri_star_{item_uid}",
-                        type="tertiary",
-                        help="Toggle standardvare",
-                    ):
-                        new_std = 0 if is_std else 1
-                        info = set_recipe_item_standard(item_uid, new_std)
-                        if info:
-                            t, c, q = info
-                            if new_std == 1:
-                                upsert_standard(t, c, q)
-                            else:
-                                delete_standard(t)
+            ss.setdefault("recipe_edit_uid_tab", ruids[0])
+            if ss["recipe_edit_uid_tab"] not in ruids:
+                ss["recipe_edit_uid_tab"] = ruids[0]
+
+            chosen = st.selectbox(
+                "Vælg opskrift",
+                options=ruids,
+                format_func=lambda u: recipe_name_by_uid.get(u, u),
+                key="recipe_edit_uid_tab",
+            )
+
+            items = fetch_recipe_items(chosen)
+
+            edit_key = f"edit_table_{chosen}"
+            if edit_key not in ss:
+                ss[edit_key] = [
+                    {"Vare": t, "Mængde": float(q), "Kategori": (c or "Ukategoriseret"), "⭐": bool(is_std), "_uid": uid}
+                    for (uid, t, q, c, is_std) in items
+                ]
+                if not ss[edit_key]:
+                    ss[edit_key] = _default_recipe_table(8)
+
+            with st.container(border=True):
+                st.markdown(f"### ✏️ Redigér: **{recipe_name_by_uid.get(chosen,'')}**")
+
+                c1, c2, c3, c4, c5 = st.columns([1, 1, 1, 1.2, 2.8], vertical_alignment="center")
+
+                with c1:
+                    if st.button("Slet", type="tertiary", key="delete_recipe_btn_tab"):
+                        delete_recipe(chosen)
                         sync_db()
                         st.rerun()
 
-                    if st.button(":material/delete:", key=f"ri_del_{item_uid}", type="tertiary"):
-                        delete_recipe_item(item_uid)
-                        sync_db()
+                with c2:
+                    if st.button("Kopiér", type="secondary", key="copy_recipe_btn_tab"):
+                        original_name = recipe_name_by_uid.get(chosen, "Opskrift")
+                        new_name = f"{original_name} (kopi)"
+                        new_uid = add_recipe(new_name)
+                        if new_uid:
+                            for _uid, t, q, cat, is_std in fetch_recipe_items(chosen):
+                                add_recipe_item(new_uid, t, q, cat, is_standard=int(is_std or 0))
+                            sync_db()
+                            ss["recipe_edit_uid_tab"] = new_uid
+                            st.success("Kopieret ✅")
+                            st.rerun()
+                        else:
+                            st.warning("Kunne ikke kopiere opskrift.")
+
+                with c3:
+                    if st.button("+ 5 rækker", type="tertiary", key="edit_add_rows_btn"):
+                        ss[edit_key] = ss[edit_key] + _default_recipe_table(5)
                         st.rerun()
+
+                with c4:
+                    # Tilføj til ugemenu (hurtigt)
+                    if st.button("➕ Ugemenu", type="primary", key="add_to_menu_btn"):
+                        ss["show_add_to_menu"] = True
+
+                with c5:
+                    st.caption("Tip: Redigér i tabellen og gem én gang.")
+
+                # Add-to-menu mini panel
+                if ss.get("show_add_to_menu", False):
+                    ws_iso = ss.get("menu_week_start_iso")
+                    if ws_iso:
+                        ws = _dt.date.fromisoformat(ws_iso)
+                        wdays = [ws + _dt.timedelta(days=i) for i in range(7)]
+                    else:
+                        ws = _monday(_dt.date.today())
+                        wdays = [ws + _dt.timedelta(days=i) for i in range(7)]
+
+                    with st.container(border=True):
+                        st.markdown("**Tilføj til ugemenu**")
+                        m1, m2, m3, m4 = st.columns([1.4, 0.8, 2.2, 1.0], vertical_alignment="center")
+                        with m1:
+                            labels = [d.strftime("%a %d/%m") for d in wdays]
+                            day_i = st.selectbox("Dag", options=list(range(7)), format_func=lambda i: labels[i], key="add_menu_day", label_visibility="collapsed")
+                        with m2:
+                            st.text_input("Antal", key="add_menu_serv", value="1", label_visibility="collapsed")
+                        with m3:
+                            st.text_input("Note", key="add_menu_note", value="", placeholder="Note (valgfri)…", label_visibility="collapsed")
+                        with m4:
+                            if st.button("Sæt", key="add_menu_confirm", type="secondary", use_container_width=True):
+                                raw = (ss.get("add_menu_serv") or "").strip().replace(",", ".")
+                                try:
+                                    s = float(raw) if raw else 1.0
+                                except Exception:
+                                    s = 1.0
+                                s = 1.0 if s <= 0 else s
+
+                                d = wdays[int(ss.get("add_menu_day", 0))]
+                                title = recipe_name_by_uid.get(chosen, "")
+                                set_meal_for_date(_iso(d), chosen, title, servings=s, note=(ss.get("add_menu_note") or "").strip())
+                                sync_db()
+                                ss["show_add_to_menu"] = False
+                                st.success(f"Tilføjet **{title}** til {d.strftime('%a %d/%m')}.")
+                                st.rerun()
+
+                        if st.button("Luk", key="add_menu_close", type="tertiary"):
+                            ss["show_add_to_menu"] = False
+                            st.rerun()
+
+                edited = st.data_editor(
+                    ss[edit_key],
+                    key=edit_key,
+                    num_rows="dynamic",
+                    use_container_width=True,
+                    column_order=["Vare", "Mængde", "Kategori", "⭐"],
+                    column_config={
+                        "Vare": st.column_config.TextColumn(required=False),
+                        "Mængde": st.column_config.NumberColumn(min_value=0.0, step=1.0),
+                        "Kategori": st.column_config.SelectboxColumn(options=ss["shopping_categories"]),
+                        "⭐": st.column_config.CheckboxColumn(help="Markér ingrediens som standardvare"),
+                    },
+                    disabled=["_uid"],
+                )
+                ss[edit_key] = edited
+
+                preview_edit = _sanitize_recipe_rows(edited)
+                if preview_edit:
+                    with st.expander("Preview (det der gemmes)", expanded=False):
+                        for r in preview_edit:
+                            st.markdown(f"- {_fmt_qty(r['qty'])} × **{r['text']}**  :small[{r['cat']}{' • ⭐' if r['is_std'] else ''}]")
+
+                if st.button("Gem ændringer", type="primary", use_container_width=True, key="save_recipe_changes_btn"):
+                    for uid, _t, _q, _c, _std in fetch_recipe_items(chosen):
+                        delete_recipe_item(uid)
+
+                    for r in preview_edit:
+                        add_recipe_item(chosen, r["text"], r["qty"], r["cat"], is_standard=r["is_std"])
+                        if r["is_std"]:
+                            upsert_standard(text=r["text"], category=r["cat"], default_qty=r["qty"])
+
+                    sync_db()
+                    if edit_key in ss:
+                        del ss[edit_key]
+                    st.success("Gemte ændringer ✅")
+                    st.rerun()
