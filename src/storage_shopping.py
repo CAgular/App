@@ -143,7 +143,6 @@ def init_shopping_tables() -> None:
         cols_p = _table_cols(con, "pantry_items")
 
     if "location" in cols_p:
-        # backwards compat (some old versions used location)
         cur.execute("UPDATE pantry_items SET category = COALESCE(category, location, 'Ukategoriseret')")
 
     if "is_standard" not in cols_p:
@@ -196,9 +195,6 @@ def upsert_standard(text: str, category: str, default_qty: float = 1.0) -> None:
 
 
 def delete_standard(text: str) -> None:
-    """
-    Remove a standard from catalog and also clear is_standard flags on matching rows.
-    """
     k = _key(text)
     if not k:
         return
@@ -315,10 +311,6 @@ def pop_shopping(uid: str) -> Optional[Tuple[str, float, str, int]]:
 
 
 def set_shopping_standard(uid: str, is_standard: int) -> Optional[Tuple[str, str, float]]:
-    """
-    Toggle standard flag for a shopping row.
-    Returns (text, category, qty) for updating standard catalog.
-    """
     con = _conn()
     cur = con.cursor()
     row = cur.execute(
@@ -463,7 +455,6 @@ def delete_recipe(recipe_uid: str) -> None:
     cur = con.cursor()
     cur.execute("DELETE FROM recipe_items WHERE recipe_uid=?", (recipe_uid,))
     cur.execute("DELETE FROM recipes WHERE uid=?", (recipe_uid,))
-    # also clear from meal_plan
     cur.execute("UPDATE meal_plan SET recipe_uid=NULL WHERE recipe_uid=?", (recipe_uid,))
     con.commit()
 
@@ -522,10 +513,6 @@ def update_recipe_item_qty(item_uid: str, qty: float) -> None:
 
 
 def recipe_add_or_merge(recipe_uid: str, text: str, qty: float, category: str, is_standard: int = 0) -> None:
-    """
-    Called when adding a shopping item and attaching it to a draft recipe.
-    Keeps category exactly as provided. Merges if same (lower(text), category) exists.
-    """
     text = (text or "").strip()
     if not text or not recipe_uid:
         return
@@ -561,13 +548,44 @@ def recipe_add_or_merge(recipe_uid: str, text: str, qty: float, category: str, i
     con.commit()
 
 
+def add_shopping_from_recipe(
+    recipe_uid: str,
+    multiplier: float = 1.0,
+    check_pantry_first: bool = True,
+) -> Dict[str, int]:
+    """
+    Add ingredients from ONE recipe to shopping list.
+    If check_pantry_first=True, skip ingredients whose text exists in pantry (name-match).
+    Uses ingredient category exactly as stored on recipe item.
+
+    Returns: {"added": int, "skipped_home": int}
+    """
+    multiplier = float(multiplier) if multiplier and float(multiplier) > 0 else 1.0
+
+    pantry_keys = set()
+    if check_pantry_first:
+        pantry_rows = fetch_pantry()
+        pantry_keys = {_key(t) for (_uid, t, _q, _c, _s) in pantry_rows if _key(t)}
+
+    items = fetch_recipe_items(recipe_uid)  # (uid,text,qty,cat,is_std)
+
+    added = 0
+    skipped = 0
+    for _uid, text, qty, cat, is_std in items:
+        tk = _key(text)
+        if check_pantry_first and tk in pantry_keys:
+            skipped += 1
+            continue
+        add_shopping(text=text, qty=float(qty) * multiplier, category=cat, is_standard=int(is_std or 0))
+        added += 1
+
+    return {"added": added, "skipped_home": skipped}
+
+
 # -----------------------------
 # Meal plan
 # -----------------------------
 def set_meal_for_date(day_date: str, recipe_uid: Optional[str], title: str, servings: float = 1.0, note: str = "") -> None:
-    """
-    Upsert a meal plan row for a specific date (YYYY-MM-DD).
-    """
     day_date = (day_date or "").strip()
     if not day_date:
         return
@@ -602,10 +620,6 @@ def clear_meal_for_date(day_date: str) -> None:
 
 
 def fetch_meal_plan(date_from: str, date_to: str) -> List[Tuple[str, Optional[str], str, float, str]]:
-    """
-    Returns rows for date range:
-    (day_date, recipe_uid, title, servings, note)
-    """
     con = _conn()
     rows = con.execute(
         """
@@ -627,14 +641,6 @@ def generate_shopping_from_mealplan(
     date_to: str,
     check_pantry_first: bool = True,
 ) -> Dict[str, int]:
-    """
-    Builds shopping list items from recipes used in meal plan in range.
-    - merges duplicates by (text_key, category)
-    - if check_pantry_first=True: skips items whose text_key exists in pantry (name match)
-    Adds items to shopping_items via add_shopping.
-
-    Returns: {"added": int, "skipped_home": int, "merged_items": int}
-    """
     pantry_keys = set()
     if check_pantry_first:
         pantry_rows = fetch_pantry()
