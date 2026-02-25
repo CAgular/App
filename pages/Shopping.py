@@ -618,7 +618,7 @@ with tab_recipes:
                 key="new_recipe_name_input",
             )
         with top[1]:
-            if st.button("+ 5 rækker", type="tertiary", key="new_recipe_add_rows", width="content"):
+            if st.button("+ Tilføj 5 rækker", type="tertiary", key="new_recipe_add_rows", width="content"):
                 ss["new_recipe_df"] = pd.concat([ss["new_recipe_df"], _default_recipe_df(5)], ignore_index=True)
                 st.rerun()
         with top[2]:
