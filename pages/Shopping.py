@@ -103,7 +103,6 @@ def _fmt_qty(q: float) -> str:
 def _sorted_categories(rows, idx_cat: int):
     def key(c: str):
         return ("zzzz" if c == "Ukategoriseret" else c.lower())
-
     return sorted({(r[idx_cat] or "Ukategoriseret") for r in rows}, key=key)
 
 
@@ -122,6 +121,13 @@ def _clean_cat(cat: str) -> str:
     if cat.lower() == "ukategoret":
         return "Ukategoriseret"
     return cat
+
+
+def _name_match(text: str, q: str) -> bool:
+    q = (q or "").strip().lower()
+    if not q:
+        return True
+    return q in (text or "").strip().lower()
 
 
 ss.setdefault(
@@ -355,7 +361,7 @@ with tab_pantry:
                             ss[f"used_qty_{uid}"] = _fmt_qty(qty)
                             st.rerun()
 
-    # Standardvarer box (valgfrit at have her - beholdt simpelt)
+    # Standardvarer (minimal)
     standards = fetch_standards()
     shopping_rows_now = fetch_shopping()
     pantry_textkeys = {t.strip().lower() for (_, t, _, _, _) in pantry_rows} if pantry_rows else set()
@@ -495,7 +501,7 @@ with tab_recipes:
     # Drafts
     # -----------------------------
     with tab_drafts:
-        st.caption("Tilføj ingredienser ved at vælge en kladde i dropdown når du tilføjer varer til indkøbslisten.")
+        st.caption("Tilføj ingredienser via dropdown i indkøbslisten – eller tilføj fra Indkøb/Hjemme herunder.")
 
         with st.form("new_recipe_form", border=False, clear_on_submit=True):
             c1, c2 = st.columns([3, 1], vertical_alignment="bottom")
@@ -518,6 +524,59 @@ with tab_recipes:
             rnames = {uid: name for uid, name, _ in drafts}
             chosen = st.selectbox("Vælg kladde", options=ruids, format_func=lambda u: rnames.get(u, u), key="draft_choice")
 
+            # -------- NEW: Add from Shopping / Pantry while editing draft --------
+            with st.expander("➕ Tilføj varer fra Indkøbsliste / Hjemme", expanded=False):
+                ss.setdefault("draft_add_source", "Indkøbsliste")
+                ss.setdefault("draft_add_search", "")
+
+                src = st.segmented_control(
+                    "Kilde",
+                    options=["Indkøbsliste", "Hjemme"],
+                    default=ss["draft_add_source"],
+                    key="draft_add_source",
+                )
+                q = st.text_input("Søg vare", key="draft_add_search", placeholder="Skriv for at filtrere…")
+
+                if src == "Indkøbsliste":
+                    source_rows = fetch_shopping()  # (uid,text,qty,cat,is_std)
+                    options = [(uid, text, qty, cat, is_std) for (uid, text, qty, cat, is_std) in source_rows if _name_match(text, q)]
+                    label = "Vælg vare fra indkøbslisten"
+                else:
+                    source_rows = fetch_pantry()  # (uid,text,qty,cat,is_std)
+                    options = [(uid, text, qty, cat, is_std) for (uid, text, qty, cat, is_std) in source_rows if _name_match(text, q)]
+                    label = "Vælg vare fra hjemme"
+
+                if not options:
+                    st.info("Ingen varer matcher søgningen.")
+                else:
+                    opt_ids = [o[0] for o in options]
+                    opt_map = {o[0]: o for o in options}
+
+                    picked_uid = st.selectbox(
+                        label,
+                        options=opt_ids,
+                        format_func=lambda u: f"{_fmt_qty(opt_map[u][2])} × {opt_map[u][1]}  ({opt_map[u][3]})",
+                        key="draft_add_pick_uid",
+                    )
+
+                    _uid, p_text, p_qty, p_cat, p_std = opt_map[picked_uid]
+
+                    # Default qty = qty from source, but allow quick override
+                    qty_str = st.text_input(
+                        "Antal (valgfrit)",
+                        key="draft_add_qty_override",
+                        value=_fmt_qty(p_qty),
+                        help="Default er antal fra listen. Du kan ændre før tilføj.",
+                    )
+                    add_now = st.button("Tilføj til opskrift", type="primary", width="stretch", key="draft_add_btn")
+                    if add_now:
+                        q_add = _parse_qty(qty_str)
+                        # category EXACTLY as it was when added to shopping/pantry
+                        recipe_add_or_merge(chosen, p_text, q_add, p_cat, is_standard=int(p_std or 0))
+                        sync_db()
+                        st.success(f"Tilføjet: {p_text}")
+                        st.rerun()
+
             items = fetch_recipe_items(chosen)  # (uid,text,qty,cat,is_std)
 
             a1, a2, a3 = st.columns([1, 1, 3], vertical_alignment="center")
@@ -535,7 +594,7 @@ with tab_recipes:
                 st.caption("Her kan du justere mængder (mobilvenligt).")
 
             if not items:
-                st.info("Ingen ingredienser endnu. Tilføj varer på indkøbslisten og vælg denne kladde i dropdown.")
+                st.info("Ingen ingredienser endnu. Tilføj varer via indkøbslisten-dropdown eller via boksen ovenfor.")
             else:
                 for item_uid, text, qty, cat, is_std in items:
                     with st.container(border=True):
