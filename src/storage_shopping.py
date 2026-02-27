@@ -6,20 +6,36 @@ from typing import List, Tuple, Optional, Dict
 
 from src.config import DB_PATH
 
-# Reuse one connection (faster than opening/closing per function)
 _CONN: Optional[sqlite3.Connection] = None
+_COL_CACHE: Dict[str, set[str]] = {}  # cache PRAGMA table_info per table
 
 
 def _conn() -> sqlite3.Connection:
     global _CONN
     if _CONN is None:
-        _CONN = sqlite3.connect(DB_PATH, check_same_thread=False)
+        con = sqlite3.connect(DB_PATH, check_same_thread=False)
+        # Speed pragmas (good defaults for Streamlit apps)
+        con.execute("PRAGMA journal_mode=WAL;")         # better concurrency + faster writes
+        con.execute("PRAGMA synchronous=NORMAL;")       # faster, still safe enough for most apps
+        con.execute("PRAGMA temp_store=MEMORY;")        # speed
+        con.execute("PRAGMA foreign_keys=OFF;")         # we don't rely on FK constraints here
+        con.execute("PRAGMA cache_size=-20000;")        # ~20MB cache (negative = KB)
+        _CONN = con
     return _CONN
 
 
 def _table_cols(con: sqlite3.Connection, table: str) -> set[str]:
+    # Cached (PRAGMA table_info is slow if called often)
+    if table in _COL_CACHE:
+        return _COL_CACHE[table]
     rows = con.execute(f"PRAGMA table_info({table})").fetchall()
-    return {r[1] for r in rows}
+    cols = {r[1] for r in rows}
+    _COL_CACHE[table] = cols
+    return cols
+
+
+def _invalidate_cols(table: str) -> None:
+    _COL_CACHE.pop(table, None)
 
 
 def _key(text: str) -> str:
@@ -40,11 +56,8 @@ def init_shopping_tables() -> None:
     con = _conn()
     cur = con.cursor()
 
-    # -----------------------------
-    # Core tables
-    # -----------------------------
-    cur.execute(
-        """
+    # Tables
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS shopping_items (
         uid TEXT PRIMARY KEY,
         text TEXT NOT NULL,
@@ -53,23 +66,18 @@ def init_shopping_tables() -> None:
         is_standard INTEGER NOT NULL DEFAULT 0,
         created_at TEXT DEFAULT (datetime('now'))
     )
-    """
-    )
+    """)
 
-    # create minimal pantry (safe for migrations)
-    cur.execute(
-        """
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS pantry_items (
         uid TEXT PRIMARY KEY,
         text TEXT NOT NULL,
         qty REAL NOT NULL DEFAULT 1,
         created_at TEXT DEFAULT (datetime('now'))
     )
-    """
-    )
+    """)
 
-    cur.execute(
-        """
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS standard_items (
         text_key TEXT PRIMARY KEY,
         text TEXT NOT NULL,
@@ -77,25 +85,18 @@ def init_shopping_tables() -> None:
         default_qty REAL NOT NULL DEFAULT 1,
         created_at TEXT DEFAULT (datetime('now'))
     )
-    """
-    )
+    """)
 
-    # -----------------------------
-    # Recipes
-    # -----------------------------
-    cur.execute(
-        """
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS recipes (
         uid TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         is_done INTEGER NOT NULL DEFAULT 0,
         created_at TEXT DEFAULT (datetime('now'))
     )
-    """
-    )
+    """)
 
-    cur.execute(
-        """
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS recipe_items (
         uid TEXT PRIMARY KEY,
         recipe_uid TEXT NOT NULL,
@@ -105,14 +106,9 @@ def init_shopping_tables() -> None:
         is_standard INTEGER NOT NULL DEFAULT 0,
         created_at TEXT DEFAULT (datetime('now'))
     )
-    """
-    )
+    """)
 
-    # -----------------------------
-    # Meal plan (used by ugemenu)
-    # -----------------------------
-    cur.execute(
-        """
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS meal_plan (
         uid TEXT PRIMARY KEY,
         day_date TEXT NOT NULL,
@@ -122,50 +118,75 @@ def init_shopping_tables() -> None:
         note TEXT,
         created_at TEXT DEFAULT (datetime('now'))
     )
-    """
-    )
+    """)
 
-    # -----------------------------
-    # Migrations: shopping_items
-    # -----------------------------
+    con.commit()
+    _invalidate_cols("shopping_items")
+    _invalidate_cols("pantry_items")
+    _invalidate_cols("recipes")
+    _invalidate_cols("meal_plan")
+
+    # Migrations shopping
     cols_s = _table_cols(con, "shopping_items")
     if "category" not in cols_s:
         cur.execute("ALTER TABLE shopping_items ADD COLUMN category TEXT NOT NULL DEFAULT 'Ukategoriseret'")
+        con.commit()
+        _invalidate_cols("shopping_items")
+        cols_s = _table_cols(con, "shopping_items")
     if "is_standard" not in cols_s:
         cur.execute("ALTER TABLE shopping_items ADD COLUMN is_standard INTEGER NOT NULL DEFAULT 0")
+        con.commit()
+        _invalidate_cols("shopping_items")
 
-    # -----------------------------
-    # Migrations: pantry_items
-    # -----------------------------
+    # Migrations pantry
     cols_p = _table_cols(con, "pantry_items")
     if "category" not in cols_p:
         cur.execute("ALTER TABLE pantry_items ADD COLUMN category TEXT NOT NULL DEFAULT 'Ukategoriseret'")
+        con.commit()
+        _invalidate_cols("pantry_items")
         cols_p = _table_cols(con, "pantry_items")
 
     if "location" in cols_p:
         cur.execute("UPDATE pantry_items SET category = COALESCE(category, location, 'Ukategoriseret')")
+        con.commit()
 
     if "is_standard" not in cols_p:
         cur.execute("ALTER TABLE pantry_items ADD COLUMN is_standard INTEGER NOT NULL DEFAULT 0")
+        con.commit()
+        _invalidate_cols("pantry_items")
 
-    # -----------------------------
-    # Migrations: recipes
-    # -----------------------------
+    # Migrations recipes
     cols_r = _table_cols(con, "recipes")
     if "is_done" not in cols_r:
         cur.execute("ALTER TABLE recipes ADD COLUMN is_done INTEGER NOT NULL DEFAULT 0")
+        con.commit()
+        _invalidate_cols("recipes")
 
-    # -----------------------------
-    # Migrations: meal_plan
-    # -----------------------------
+    # Migrations meal_plan
     cols_mp = _table_cols(con, "meal_plan")
     if "servings" not in cols_mp:
         cur.execute("ALTER TABLE meal_plan ADD COLUMN servings REAL NOT NULL DEFAULT 1")
+        con.commit()
+        _invalidate_cols("meal_plan")
+        cols_mp = _table_cols(con, "meal_plan")
     if "note" not in cols_mp:
         cur.execute("ALTER TABLE meal_plan ADD COLUMN note TEXT")
+        con.commit()
+        _invalidate_cols("meal_plan")
+        cols_mp = _table_cols(con, "meal_plan")
     if "title" not in cols_mp:
         cur.execute("ALTER TABLE meal_plan ADD COLUMN title TEXT")
+        con.commit()
+        _invalidate_cols("meal_plan")
 
+    # Indexes (big speed-up on fetch/order/filter)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_shop_cat_created ON shopping_items(category, created_at)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_shop_text_lower ON shopping_items(LOWER(text))")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_pantry_cat_created ON pantry_items(category, created_at)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_pantry_text_lower ON pantry_items(LOWER(text))")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_recipe_items_ru_cat ON recipe_items(recipe_uid, category)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_recipe_items_text_lower ON recipe_items(recipe_uid, LOWER(text))")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_meal_plan_day ON meal_plan(day_date)")
     con.commit()
 
 
@@ -195,14 +216,12 @@ def upsert_standard(text: str, category: str, default_qty: float = 1.0) -> None:
 
 
 def delete_standard(text: str) -> None:
-    """
-    Remove a standard from catalog and also clear is_standard flags on matching rows.
-    """
     k = _key(text)
     if not k:
         return
     con = _conn()
     cur = con.cursor()
+    cur.execute("BEGIN")
     cur.execute("DELETE FROM standard_items WHERE text_key=?", (k,))
     cur.execute("UPDATE shopping_items SET is_standard=0 WHERE lower(text)=?", (k,))
     cur.execute("UPDATE pantry_items SET is_standard=0 WHERE lower(text)=?", (k,))
@@ -264,9 +283,15 @@ def get_pantry_item(uid: str) -> Optional[Tuple[str, float, str, int]]:
     con = _conn()
     cols = _table_cols(con, "pantry_items")
     if "location" in cols:
-        q = "SELECT text, qty, COALESCE(category, location, 'Ukategoriseret'), COALESCE(is_standard,0) FROM pantry_items WHERE uid=?"
+        q = """
+        SELECT text, qty, COALESCE(category, location, 'Ukategoriseret'), COALESCE(is_standard,0)
+        FROM pantry_items WHERE uid=?
+        """
     else:
-        q = "SELECT text, qty, COALESCE(category,'Ukategoriseret'), COALESCE(is_standard,0) FROM pantry_items WHERE uid=?"
+        q = """
+        SELECT text, qty, COALESCE(category,'Ukategoriseret'), COALESCE(is_standard,0)
+        FROM pantry_items WHERE uid=?
+        """
     row = con.execute(q, (uid,)).fetchone()
     if not row:
         return None
@@ -307,6 +332,7 @@ def pop_shopping(uid: str) -> Optional[Tuple[str, float, str, int]]:
     ).fetchone()
     if not row:
         return None
+    cur.execute("BEGIN")
     cur.execute("DELETE FROM shopping_items WHERE uid=?", (uid,))
     con.commit()
     text, qty, category, is_std = row
@@ -314,10 +340,6 @@ def pop_shopping(uid: str) -> Optional[Tuple[str, float, str, int]]:
 
 
 def set_shopping_standard(uid: str, is_standard: int) -> Optional[Tuple[str, str, float]]:
-    """
-    Toggle standard flag for a shopping row.
-    Returns (text, category, qty) for updating standard catalog.
-    """
     con = _conn()
     cur = con.cursor()
     row = cur.execute(
@@ -347,6 +369,7 @@ def pantry_add_or_merge(text: str, qty: float, category: str, is_standard: int =
 
     con = _conn()
     cur = con.cursor()
+
     row = cur.execute(
         """
         SELECT uid, qty, COALESCE(is_standard,0)
@@ -356,32 +379,38 @@ def pantry_add_or_merge(text: str, qty: float, category: str, is_standard: int =
         (text.lower(), category),
     ).fetchone()
 
+    cur.execute("BEGIN")
     if row:
         puid, old_qty, old_std = row
         new_std = 1 if (int(old_std or 0) == 1 or is_standard == 1) else 0
-        cur.execute("UPDATE pantry_items SET qty=?, is_standard=? WHERE uid=?", (float(old_qty) + qty, new_std, puid))
+        cur.execute(
+            "UPDATE pantry_items SET qty=?, is_standard=? WHERE uid=?",
+            (float(old_qty) + qty, new_std, puid),
+        )
     else:
         cur.execute(
             "INSERT INTO pantry_items (uid, text, qty, category, is_standard) VALUES (?, ?, ?, ?, ?)",
             (str(uuid.uuid4()), text, qty, category, is_standard),
         )
-
     con.commit()
 
 
 def pantry_consume(uid: str, qty_used: float) -> Optional[Tuple[str, str, int]]:
     qty_used = float(qty_used) if qty_used and qty_used > 0 else 1.0
-
     con = _conn()
     cur = con.cursor()
+
     row = cur.execute(
         "SELECT text, qty, COALESCE(category,'Ukategoriseret'), COALESCE(is_standard,0) FROM pantry_items WHERE uid=?",
         (uid,),
     ).fetchone()
     if not row:
         return None
+
     text, qty, category, is_std = row
     remaining = float(qty) - qty_used
+
+    cur.execute("BEGIN")
     if remaining > 0:
         cur.execute("UPDATE pantry_items SET qty=? WHERE uid=?", (remaining, uid))
     else:
@@ -418,7 +447,8 @@ def pantry_move_category(uid: str, new_category: str) -> bool:
         return False
 
     text, qty, old_cat, is_std = row
-    if (old_cat or "Ukategoriseret") == new_category:
+    old_cat = old_cat or "Ukategoriseret"
+    if old_cat == new_category:
         return False
 
     row2 = cur.execute(
@@ -430,6 +460,7 @@ def pantry_move_category(uid: str, new_category: str) -> bool:
         (text.strip().lower(), new_category),
     ).fetchone()
 
+    cur.execute("BEGIN")
     if row2:
         uid2, qty2, is_std2 = row2
         new_qty = float(qty2) + float(qty)
@@ -438,13 +469,12 @@ def pantry_move_category(uid: str, new_category: str) -> bool:
         cur.execute("DELETE FROM pantry_items WHERE uid=?", (uid,))
     else:
         cur.execute("UPDATE pantry_items SET category=? WHERE uid=?", (new_category, uid))
-
     con.commit()
     return True
 
 
 # -----------------------------
-# Recipes (drafts + finished)
+# Recipes
 # -----------------------------
 def add_recipe(name: str, is_done: int = 0) -> Optional[str]:
     name = (name or "").strip()
@@ -460,6 +490,7 @@ def add_recipe(name: str, is_done: int = 0) -> Optional[str]:
 def delete_recipe(recipe_uid: str) -> None:
     con = _conn()
     cur = con.cursor()
+    cur.execute("BEGIN")
     cur.execute("DELETE FROM recipe_items WHERE recipe_uid=?", (recipe_uid,))
     cur.execute("DELETE FROM recipes WHERE uid=?", (recipe_uid,))
     cur.execute("UPDATE meal_plan SET recipe_uid=NULL WHERE recipe_uid=?", (recipe_uid,))
@@ -473,12 +504,6 @@ def set_recipe_done(recipe_uid: str, is_done: int) -> None:
 
 
 def fetch_recipes(done: Optional[int] = None) -> List[Tuple[str, str, int]]:
-    """
-    done=None => all
-    done=0 => drafts
-    done=1 => finished
-    Returns: (uid, name, is_done)
-    """
     con = _conn()
     if done is None:
         rows = con.execute(
@@ -520,10 +545,6 @@ def update_recipe_item_qty(item_uid: str, qty: float) -> None:
 
 
 def recipe_add_or_merge(recipe_uid: str, text: str, qty: float, category: str, is_standard: int = 0) -> None:
-    """
-    Called when adding a shopping item and attaching it to a draft recipe.
-    Keeps category exactly as provided. Merges if same (lower(text), category) exists.
-    """
     text = (text or "").strip()
     if not text or not recipe_uid:
         return
@@ -533,6 +554,7 @@ def recipe_add_or_merge(recipe_uid: str, text: str, qty: float, category: str, i
 
     con = _conn()
     cur = con.cursor()
+
     row = cur.execute(
         """
         SELECT uid, qty, COALESCE(is_standard,0)
@@ -542,6 +564,7 @@ def recipe_add_or_merge(recipe_uid: str, text: str, qty: float, category: str, i
         (recipe_uid, text.strip().lower(), category),
     ).fetchone()
 
+    cur.execute("BEGIN")
     if row:
         uid, old_qty, old_std = row
         new_qty = float(old_qty) + qty
@@ -555,22 +578,10 @@ def recipe_add_or_merge(recipe_uid: str, text: str, qty: float, category: str, i
             """,
             (str(uuid.uuid4()), recipe_uid, text, qty, category, is_standard),
         )
-
     con.commit()
 
 
-def add_shopping_from_recipe(
-    recipe_uid: str,
-    multiplier: float = 1.0,
-    check_pantry_first: bool = True,
-) -> Dict[str, int]:
-    """
-    Add ingredients from ONE recipe to shopping list.
-    If check_pantry_first=True, skip ingredients whose text exists in pantry (name-match).
-    Uses ingredient category exactly as stored on recipe item.
-
-    Returns: {"added": int, "skipped_home": int}
-    """
+def add_shopping_from_recipe(recipe_uid: str, multiplier: float = 1.0, check_pantry_first: bool = True) -> Dict[str, int]:
     multiplier = float(multiplier) if multiplier and float(multiplier) > 0 else 1.0
 
     pantry_keys = set()
@@ -578,8 +589,7 @@ def add_shopping_from_recipe(
         pantry_rows = fetch_pantry()
         pantry_keys = {_key(t) for (_uid, t, _q, _c, _s) in pantry_rows if _key(t)}
 
-    items = fetch_recipe_items(recipe_uid)  # (uid,text,qty,cat,is_std)
-
+    items = fetch_recipe_items(recipe_uid)
     added = 0
     skipped = 0
     for _uid, text, qty, cat, is_std in items:
@@ -589,7 +599,6 @@ def add_shopping_from_recipe(
             continue
         add_shopping(text=text, qty=float(qty) * multiplier, category=cat, is_standard=int(is_std or 0))
         added += 1
-
     return {"added": added, "skipped_home": skipped}
 
 
@@ -597,9 +606,6 @@ def add_shopping_from_recipe(
 # Meal plan
 # -----------------------------
 def set_meal_for_date(day_date: str, recipe_uid: Optional[str], title: str, servings: float = 1.0, note: str = "") -> None:
-    """
-    Upsert a meal plan row for a specific date (YYYY-MM-DD).
-    """
     day_date = (day_date or "").strip()
     if not day_date:
         return
@@ -610,6 +616,8 @@ def set_meal_for_date(day_date: str, recipe_uid: Optional[str], title: str, serv
     con = _conn()
     cur = con.cursor()
     existing = cur.execute("SELECT uid FROM meal_plan WHERE day_date=?", (day_date,)).fetchone()
+
+    cur.execute("BEGIN")
     if existing:
         uid = existing[0]
         cur.execute(
@@ -634,10 +642,6 @@ def clear_meal_for_date(day_date: str) -> None:
 
 
 def fetch_meal_plan(date_from: str, date_to: str) -> List[Tuple[str, Optional[str], str, float, str]]:
-    """
-    Returns rows for date range:
-    (day_date, recipe_uid, title, servings, note)
-    """
     con = _conn()
     rows = con.execute(
         """
@@ -651,22 +655,7 @@ def fetch_meal_plan(date_from: str, date_to: str) -> List[Tuple[str, Optional[st
     return [(r[0], r[1], r[2] or "", float(r[3] or 1), r[4] or "") for r in rows]
 
 
-# -----------------------------
-# Generate shopping list from meal plan
-# -----------------------------
-def generate_shopping_from_mealplan(
-    date_from: str,
-    date_to: str,
-    check_pantry_first: bool = True,
-) -> Dict[str, int]:
-    """
-    Builds shopping list items from recipes used in meal plan in range.
-    - merges duplicates by (text_key, category)
-    - if check_pantry_first=True: skips items whose text_key exists in pantry (name match)
-    Adds items to shopping_items via add_shopping.
-
-    Returns: {"added": int, "skipped_home": int, "merged_items": int}
-    """
+def generate_shopping_from_mealplan(date_from: str, date_to: str, check_pantry_first: bool = True) -> Dict[str, int]:
     pantry_keys = set()
     if check_pantry_first:
         pantry_rows = fetch_pantry()
@@ -717,12 +706,7 @@ def generate_shopping_from_mealplan(
 
     added = 0
     for (_tk, _cat), v in merged.items():
-        add_shopping(
-            text=str(v["text"]),
-            qty=float(v["qty"]),
-            category=str(v["category"]),
-            is_standard=int(v["is_standard"]),
-        )
+        add_shopping(text=str(v["text"]), qty=float(v["qty"]), category=str(v["category"]), is_standard=int(v["is_standard"]))
         added += 1
 
     skipped_home = 0
