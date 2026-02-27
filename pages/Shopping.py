@@ -7,6 +7,7 @@ from src.app_state import init_app_state
 from src.config import APP_TITLE, DB_PATH, DB_DRIVE_NAME
 from src.storage_shopping import (
     init_shopping_tables,
+    # shopping / pantry / standards
     fetch_shopping,
     fetch_pantry,
     fetch_standards,
@@ -16,7 +17,6 @@ from src.storage_shopping import (
     delete_shopping,
     pop_shopping,
     pantry_add_or_merge,
-    get_pantry_item,
     pantry_consume,
     pantry_move_category,
     set_shopping_standard,
@@ -153,7 +153,10 @@ tab_shop, tab_pantry, tab_menu, tab_recipes = st.tabs(["Indkøbsliste", "Hjemme"
 # TAB: Indkøbsliste
 # -----------------------------
 with tab_shop:
-    draft_recipes = fetch_recipes(done=0)  # [(uid,name,is_done)]
+    # Fetch once per rerun (speed)
+    shopping_rows = fetch_shopping()  # (uid,text,qty,cat,is_std)
+    draft_recipes = fetch_recipes(done=0)  # (uid,name,is_done)
+
     draft_options = [""] + [uid for uid, _, _ in draft_recipes]
     draft_name = {uid: name for uid, name, _ in draft_recipes}
 
@@ -195,22 +198,19 @@ with tab_shop:
                 recipe_uid = ss.get("new_item_recipe_uid") or ""
 
                 add_shopping(text=text, qty=qty, category=cat, is_standard=is_std)
-
                 if recipe_uid:
                     recipe_add_or_merge(recipe_uid, text, qty, cat, is_standard=is_std)
-
                 if is_std:
                     upsert_standard(text=text, category=cat, default_qty=qty)
 
                 sync_db()
                 st.rerun()
 
-    rows = fetch_shopping()
-    if not rows:
+    if not shopping_rows:
         st.info("Listen er tom.")
     else:
-        for cat in _sorted_categories(rows, idx_cat=3):
-            group = [r for r in rows if (r[3] or "Ukategoriseret") == cat]
+        for cat in _sorted_categories(shopping_rows, idx_cat=3):
+            group = [r for r in shopping_rows if (r[3] or "Ukategoriseret") == cat]
             if not group:
                 continue
             with st.container(border=True):
@@ -249,6 +249,15 @@ with tab_shop:
 # TAB: Hjemme
 # -----------------------------
 with tab_pantry:
+    # Fetch once (speed)
+    pantry_rows = fetch_pantry()  # (uid,text,qty,cat,is_std)
+    shopping_rows_now = fetch_shopping()  # for standard status (needed only here)
+    standards = fetch_standards()
+
+    pantry_by_uid = {uid: (text, qty, cat, is_std) for uid, text, qty, cat, is_std in pantry_rows}
+    pantry_textkeys = {t.strip().lower() for (_, t, _, _, _) in pantry_rows} if pantry_rows else set()
+    shopping_textkeys = {t.strip().lower() for (_, t, _, _, _) in shopping_rows_now} if shopping_rows_now else set()
+
     st.caption("Tilføj direkte til det du har derhjemme (rester til fryseren osv.)")
 
     with st.form("add_pantry_form", border=False, clear_on_submit=True):
@@ -277,10 +286,10 @@ with tab_pantry:
                 sync_db()
                 st.rerun()
 
-    # --- Prompt when clicking "Brugt" ---
+    # --- Prompt when clicking "Brugt" (lookup from pantry_by_uid, no DB call) ---
     prompt_uid = ss.get("pantry_prompt_uid")
     if prompt_uid:
-        info = get_pantry_item(prompt_uid)  # (text, qty, cat, is_std)
+        info = pantry_by_uid.get(prompt_uid)
         if info:
             p_text, p_qty, p_cat, p_std = info
             default_key = f"used_qty_{prompt_uid}"
@@ -320,11 +329,6 @@ with tab_pantry:
         else:
             ss["pantry_prompt_uid"] = None
 
-    pantry_rows = fetch_pantry()  # (uid,text,qty,cat,is_std)
-    shopping_rows_now = fetch_shopping()  # for standardvarer status
-    pantry_textkeys = {t.strip().lower() for (_, t, _, _, _) in pantry_rows} if pantry_rows else set()
-    shopping_textkeys = {t.strip().lower() for (_, t, _, _, _) in shopping_rows_now} if shopping_rows_now else set()
-
     if not pantry_rows:
         st.info("Ingen varer registreret derhjemme endnu.")
     else:
@@ -338,7 +342,6 @@ with tab_pantry:
                     with st.container(horizontal=True, vertical_alignment="center"):
                         st.markdown(f"{_fmt_qty(qty)} × {text}")
 
-                        # ⭐ toggle
                         star_label = "⭐" if is_std else "☆"
                         if st.button(star_label, key=f"pantry_star_{uid}", type="tertiary", width="content"):
                             new_std = 0 if is_std else 1
@@ -352,7 +355,6 @@ with tab_pantry:
                             sync_db()
                             st.rerun()
 
-                        # Move to Frost
                         if _cat != "Frost":
                             if st.button("→ Frost", key=f"to_frost_{uid}", type="tertiary", width="content"):
                                 changed = pantry_move_category(uid, "Frost")
@@ -360,14 +362,12 @@ with tab_pantry:
                                     sync_db()
                                     st.rerun()
 
-                        # Brugt (prompt)
                         if st.button("Brugt", key=f"used_{uid}", type="secondary", width="content"):
                             ss["pantry_prompt_uid"] = uid
                             ss[f"used_qty_{uid}"] = _fmt_qty(qty)
                             st.rerun()
 
-    # --- Standardvarer: quick add ---
-    standards = fetch_standards()  # (text, category, default_qty)
+    # --- Standardvarer: quick add (uses pre-fetched sets, no extra DB calls) ---
     if standards:
         missing = []
         present = []
@@ -386,10 +386,7 @@ with tab_pantry:
                 status = "⚠️ Mangler"
 
             row = (text, cat, default_qty, k, in_shop, status)
-            if status == "⚠️ Mangler":
-                missing.append(row)
-            else:
-                present.append(row)
+            (missing if status == "⚠️ Mangler" else present).append(row)
 
         st.divider()
         with st.container(border=True):
@@ -430,8 +427,7 @@ with tab_pantry:
 # TAB: Ugemenu (kun færdige opskrifter)
 # -----------------------------
 with tab_menu:
-    st.subheader("📅 Ugemenu")
-
+    # Fetch once (speed)
     today = _dt.date.today()
     week_start = st.date_input("Vælg uge (mandag)", value=_monday(today), key="menu_week_start_input")
     week_start = _monday(week_start)
@@ -446,6 +442,7 @@ with tab_menu:
     plan_rows = fetch_meal_plan(week_from, week_to)
     plan_by_date = {d: (ruid, title, servings, note) for (d, ruid, title, servings, note) in plan_rows}
 
+    st.subheader("📅 Ugemenu")
     st.caption("Ugemenu bruger kun **færdige opskrifter**.")
 
     with st.container(border=True):
@@ -478,7 +475,13 @@ with tab_menu:
                     placeholder="1",
                 )
 
-            st.text_input(f"Note {d_str}", value=(note or ""), key=f"mp_note_{d_str}", label_visibility="collapsed", placeholder="Note (valgfri)…")
+            st.text_input(
+                f"Note {d_str}",
+                value=(note or ""),
+                key=f"mp_note_{d_str}",
+                label_visibility="collapsed",
+                placeholder="Note (valgfri)…",
+            )
 
             bcols = st.columns([1, 1, 6], vertical_alignment="center")
             with bcols[0]:
@@ -526,6 +529,10 @@ with tab_recipes:
     st.subheader("📚 Opskrifter")
     tab_drafts, tab_done = st.tabs(["📝 Ikke færdige", "✅ Færdige"])
 
+    # Fetch once for this tab rerun (speed)
+    all_shopping_for_picker = fetch_shopping()
+    all_pantry_for_picker = fetch_pantry()
+
     # -----------------------------
     # Drafts
     # -----------------------------
@@ -553,7 +560,6 @@ with tab_recipes:
             rnames = {uid: name for uid, name, _ in drafts}
             chosen = st.selectbox("Vælg kladde", options=ruids, format_func=lambda u: rnames.get(u, u), key="draft_choice")
 
-            # Add from shopping/pantry while editing
             with st.expander("➕ Tilføj varer fra Indkøbsliste / Hjemme", expanded=False):
                 ss.setdefault("draft_add_source", "Indkøbsliste")
                 ss.setdefault("draft_add_search", "")
@@ -567,11 +573,11 @@ with tab_recipes:
                 q = st.text_input("Søg vare", key="draft_add_search", placeholder="Skriv for at filtrere…")
 
                 if src == "Indkøbsliste":
-                    source_rows = fetch_shopping()  # (uid,text,qty,cat,is_std)
+                    source_rows = all_shopping_for_picker  # (uid,text,qty,cat,is_std)
                     options = [(uid, text, qty, cat, is_std) for (uid, text, qty, cat, is_std) in source_rows if _name_match(text, q)]
                     label = "Vælg vare fra indkøbslisten"
                 else:
-                    source_rows = fetch_pantry()  # (uid,text,qty,cat,is_std)
+                    source_rows = all_pantry_for_picker  # (uid,text,qty,cat,is_std)
                     options = [(uid, text, qty, cat, is_std) for (uid, text, qty, cat, is_std) in source_rows if _name_match(text, q)]
                     label = "Vælg vare fra hjemme"
 
